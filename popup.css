@@ -6,6 +6,10 @@
   padding: 0;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 body {
   width: 350px;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -31,10 +35,9 @@ body {
   gap: 8px;
 }
 
-.plex-logo {
+.reelhop-logo {
   width: 20px;
   height: 20px;
-  fill: #e5a00d;
 }
 
 .header h2 {
@@ -54,6 +57,13 @@ body {
 
 .content {
   padding: 16px;
+}
+
+.intro {
+  font-size: 11.5px;
+  color: #789;
+  line-height: 1.4;
+  margin-bottom: 12px;
 }
 
 .form-group {
@@ -91,8 +101,8 @@ select {
 input[type="text"]:focus,
 input[type="password"]:focus,
 select:focus {
-  border-color: #e5a00d;
-  box-shadow: 0 0 0 2px rgba(229, 160, 13, 0.2);
+  border-color: #3ecfb2;
+  box-shadow: 0 0 0 2px rgba(62, 207, 178, 0.2);
 }
 
 .hint {
@@ -105,6 +115,89 @@ select:focus {
 
 .hint strong {
   color: #9ab;
+}
+
+/* Destination cards */
+.dest-card {
+  background: #1a2026;
+  border: 1px solid #28313a;
+  border-radius: 6px;
+  margin-bottom: 14px;
+  overflow: hidden;
+}
+
+.dest-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  background: #1c2228;
+  border-bottom: 1px solid #28313a;
+}
+
+.dest-head h3 {
+  flex: 1;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: #fff;
+}
+
+.dest-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.dest-dot.plex {
+  background: #e5a00d;
+}
+
+.dest-dot.radarr {
+  background: #ffc230;
+}
+
+.dest-note {
+  font-size: 10px;
+  color: #678;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.dest-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #bcc;
+  cursor: pointer;
+}
+
+.dest-toggle input {
+  accent-color: #3ecfb2;
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  cursor: pointer;
+}
+
+.dest-body {
+  padding: 12px;
+}
+
+.dest-body > :last-child {
+  margin-bottom: 0;
+}
+
+.form-row {
+  display: flex;
+  gap: 8px;
+}
+
+.form-row .form-group {
+  flex: 1;
+  min-width: 0;
 }
 
 /* Per-site grouping within Display Locations */
@@ -148,7 +241,7 @@ select:focus {
 
 .checkbox-item input[type="checkbox"],
 .checkbox-group input[type="checkbox"] {
-  accent-color: #e5a00d;
+  accent-color: #3ecfb2;
   width: 14px;
   height: 14px;
   cursor: pointer;
@@ -169,14 +262,7 @@ select:focus {
   color: #bcc;
 }
 
-.actions-row {
-  display: flex;
-  gap: 8px;
-  margin-top: 16px;
-}
-
 .btn {
-  flex: 1;
   padding: 8px 12px;
   border-radius: 4px;
   font-size: 12px;
@@ -188,13 +274,24 @@ select:focus {
   text-align: center;
 }
 
+.btn.full {
+  display: block;
+  width: 100%;
+  margin-bottom: 12px;
+}
+
+.btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
 .btn.primary {
-  background-color: #e5a00d;
+  background-color: #3ecfb2;
   color: #14181c;
 }
 
 .btn.primary:hover {
-  background-color: #f7b420;
+  background-color: #5fdcc4;
 }
 
 .btn.secondary {
@@ -209,6 +306,11 @@ select:focus {
   border-color: #4a5968;
 }
 
+#saveBtn {
+  margin-top: 4px;
+  margin-bottom: 0;
+}
+
 .status-msg {
   display: none;
   margin-top: 10px;
@@ -216,6 +318,7 @@ select:focus {
   border-radius: 4px;
   font-size: 11px;
   line-height: 1.35;
+  user-select: text;
 }
 
 .status-msg.success {
@@ -234,9 +337,9 @@ select:focus {
 
 .status-msg.info {
   display: block;
-  background-color: rgba(229, 160, 13, 0.15);
-  color: #e5a00d;
-  border: 1px solid rgba(229, 160, 13, 0.3);
+  background-color: rgba(62, 207, 178, 0.15);
+  color: #3ecfb2;
+  border: 1px solid rgba(62, 207, 178, 0.3);
 }
 
 .divider {
@@ -259,7 +362,7 @@ select:focus {
 }
 
 .footer-links a:hover {
-  color: #e5a00d;
+  color: #3ecfb2;
 }
 
 .link-btn {

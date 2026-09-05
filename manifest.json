@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "PlexHop",
-  "version": "1.7.0",
-  "description": "Open any movie in Plex — jump from Letterboxd or IMDb to your server, Plex Discover, or search. Unofficial; not affiliated with Letterboxd, IMDb, or Plex.",
+  "name": "ReelHop",
+  "version": "2.0.0",
+  "description": "Hop from Letterboxd and IMDb to Plex or Radarr in one click. Unofficial; not affiliated with Letterboxd, IMDb, Plex, or Radarr.",
   "icons": {
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
@@ -10,7 +10,7 @@
   },
   "action": {
     "default_popup": "popup.html",
-    "default_title": "PlexHop Settings",
+    "default_title": "ReelHop Settings",
     "default_icon": {
       "16": "icons/icon16.png",
       "48": "icons/icon48.png",
@@ -24,6 +24,10 @@
     "https://plex.tv/*",
     "https://discover.provider.plex.tv/*",
     "https://*.plex.direct/*"
+  ],
+  "optional_host_permissions": [
+    "http://*/*",
+    "https://*/*"
   ],
   "background": {
     "service_worker": "background.js"

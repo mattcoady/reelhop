@@ -1,6 +1,13 @@
-// PlexHop - Background Service Worker
-// All Plex API calls happen here (not in content scripts) so the extension
-// only needs narrow host permissions for Plex's own domains.
+// ReelHop - Background Service Worker
+//
+// Every network call happens here (never in content scripts), so the
+// extension only needs narrow host permissions: Plex's own domains, plus the
+// single Radarr origin the user grants at runtime from the popup.
+//
+// Destinations each get their own section and their own message actions
+// (plexResolve, radarrResolve, radarrAdd, ...). The content script asks for
+// every enabled destination in parallel and paints whatever comes back, so a
+// slow or offline Radarr never delays the Plex link.
 
 const SERVER_LIST_TTL = 3600000; // 1 hour
 const REQUEST_TIMEOUT = 3000;
@@ -19,10 +26,27 @@ function normalize(str) {
     .replace(/[^a-z0-9]/g, '');
 }
 
+function yearsClose(a, b) {
+  const ya = parseInt(a, 10);
+  const yb = parseInt(b, 10);
+  return !ya || !yb || Math.abs(ya - yb) <= 1;
+}
+
+function fetchWithTimeout(url, options = {}, timeout = REQUEST_TIMEOUT) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeout);
+  return fetch(url, { ...options, signal: controller.signal })
+    .finally(() => clearTimeout(timeoutId));
+}
+
+// ===========================================================================
+// Plex
+// ===========================================================================
+
 async function getClientId() {
   const { clientId } = await chrome.storage.local.get('clientId');
   if (clientId) return clientId;
-  const newId = 'lb-plex-' + (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 15));
+  const newId = 'reelhop-' + (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 15));
   await chrome.storage.local.set({ clientId: newId });
   return newId;
 }
@@ -32,19 +56,12 @@ async function getPlexHeaders(token) {
     'Accept': 'application/json',
     'X-Plex-Token': token,
     'X-Plex-Client-Identifier': await getClientId(),
-    'X-Plex-Product': 'PlexHop',
+    'X-Plex-Product': 'ReelHop',
     'X-Plex-Version': chrome.runtime.getManifest().version,
     'X-Plex-Platform': 'Browser',
     'X-Plex-Device': 'Desktop',
-    'X-Plex-Device-Name': 'PlexHop'
+    'X-Plex-Device-Name': 'ReelHop'
   };
-}
-
-function fetchWithTimeout(url, options = {}, timeout = REQUEST_TIMEOUT) {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeout);
-  return fetch(url, { ...options, signal: controller.signal })
-    .finally(() => clearTimeout(timeoutId));
 }
 
 function getSearchUrl(title, year) {
@@ -86,7 +103,7 @@ async function getUserServers(token) {
       }
     }
   } catch (e) {
-    console.warn('[PlexHop] Error fetching user servers:', e);
+    console.warn('[ReelHop] Error fetching user servers:', e);
   }
   return [];
 }
@@ -98,7 +115,6 @@ async function searchUserServers(title, year, token, imdbId, mediaType) {
 
   const cleanTitle = sanitizeText(title);
   const normTargetTitle = normalize(cleanTitle);
-  const targetYear = parseInt(year, 10);
   // Which Plex item types are acceptable. mediaType is a soft hint ('movie'
   // | 'show' | '' unknown); IMDb-ID matches are always accepted regardless.
   const allowedTypes = mediaType === 'show' ? ['show']
@@ -147,9 +163,6 @@ async function searchUserServers(title, year, token, imdbId, mediaType) {
         for (const item of items) {
           if (item.type !== 'movie' && item.type !== 'show') continue;
 
-          const itemTitleNorm = normalize(item.title || '');
-          const itemYear = parseInt(item.year, 10);
-
           const imdbMatch = imdbId && (
             (item.guid && item.guid.includes(imdbId)) ||
             (Array.isArray(item.Guid) && item.Guid.some(g => g.id && g.id.includes(imdbId)))
@@ -158,8 +171,8 @@ async function searchUserServers(title, year, token, imdbId, mediaType) {
           // Title fallback must be the right kind of item (when we know it),
           // so a same-named movie can't shadow the show we're after.
           const titleMatch = allowedTypes.includes(item.type) &&
-            (itemTitleNorm === normTargetTitle) &&
-            (!targetYear || !itemYear || Math.abs(itemYear - targetYear) <= 1);
+            normalize(item.title || '') === normTargetTitle &&
+            yearsClose(item.year, year);
 
           if (imdbMatch || titleMatch) {
             return {
@@ -188,7 +201,6 @@ async function searchUserServers(title, year, token, imdbId, mediaType) {
 async function fetchPlexDiscoverRatingKey(title, year, token, imdbId, mediaType) {
   const cleanTitle = sanitizeText(title);
   const normTargetTitle = normalize(cleanTitle);
-  const targetYear = parseInt(year, 10);
   const headers = await getPlexHeaders(token);
 
   // Plex Discover types: 1 = movie, 2 = show. When we don't know, try both.
@@ -232,26 +244,21 @@ async function fetchPlexDiscoverRatingKey(title, year, token, imdbId, mediaType)
       }
 
       for (const item of items) {
-        const itemTitleNorm = normalize(item.title || '');
-        const itemYear = parseInt(item.year, 10);
-
-        if (itemTitleNorm === normTargetTitle) {
-          if (!targetYear || !itemYear || Math.abs(itemYear - targetYear) <= 1) {
-            return item.ratingKey || item.id;
-          }
+        if (normalize(item.title || '') === normTargetTitle && yearsClose(item.year, year)) {
+          return item.ratingKey || item.id;
         }
       }
       // No confident match in this response; deliberately no first-item
       // fallback — a wrong deep link is worse than falling back to search.
     } catch (e) {
-      console.warn('[PlexHop] Discover fetch failed:', e);
+      console.warn('[ReelHop] Discover fetch failed:', e);
     }
   }
 
   return null;
 }
 
-async function resolveMovie(movie) {
+async function plexResolve(movie) {
   const settings = await chrome.storage.local.get(['plexToken', 'preferredMode']);
   const plexToken = settings.plexToken || '';
   const preferredMode = settings.preferredMode || 'server_first';
@@ -281,7 +288,7 @@ async function resolveMovie(movie) {
   };
 }
 
-async function testToken(token) {
+async function plexTest(token) {
   const headers = await getPlexHeaders(token);
 
   const userRes = await fetchWithTimeout('https://plex.tv/api/v2/user', { headers }, 8000);
@@ -307,21 +314,316 @@ async function testToken(token) {
       }
     }
   } catch (err) {
-    console.warn('[PlexHop] Resources fetch error:', err);
+    console.warn('[ReelHop] Resources fetch error:', err);
   }
 
   return { ok: true, username, serverNames };
 }
 
+// ===========================================================================
+// Radarr
+//
+// Radarr is movies-only, so the content script never asks about TV shows.
+// The user's Radarr lives at an arbitrary URL (often plain-HTTP on a LAN), so
+// its origin is an optional host permission the popup requests when they
+// save the URL; without it every call short-circuits to status 'permission'.
+// ===========================================================================
+
+const RADARR_TIMEOUT = 8000;
+
+class RadarrHttpError extends Error {
+  constructor(status) {
+    super(`Radarr returned HTTP ${status}`);
+    this.status = status;
+  }
+}
+
+// Turn whatever the user typed into "http(s)://host[:port][/urlbase]" with no
+// trailing slash. Returns '' when it can't be a valid http(s) URL.
+function normalizeRadarrUrl(raw) {
+  let s = (raw || '').trim();
+  if (!s) return '';
+  // Anything with a non-http(s) scheme is a typo, not a Radarr address.
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(s) && !/^https?:\/\//i.test(s)) return '';
+  if (!/^https?:\/\//i.test(s)) s = 'http://' + s;
+  try {
+    const u = new URL(s);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return '';
+    return (u.origin + u.pathname).replace(/\/+$/, '');
+  } catch (e) {
+    return '';
+  }
+}
+
+// Match pattern for the Radarr host. Chrome match patterns cover every port
+// unless one is written explicitly, so this works for :7878 and friends.
+function radarrOriginPattern(baseUrl) {
+  const u = new URL(baseUrl);
+  return `${u.protocol}//${u.hostname}/*`;
+}
+
+async function getRadarrConfig() {
+  const items = await chrome.storage.local.get([
+    'radarrEnabled', 'radarrUrl', 'radarrApiKey', 'radarrQualityProfileId',
+    'radarrRootFolder', 'radarrMinAvailability', 'radarrSearchOnAdd'
+  ]);
+  const url = normalizeRadarrUrl(items.radarrUrl);
+  const apiKey = (items.radarrApiKey || '').trim();
+  return {
+    enabled: items.radarrEnabled === true && !!url,
+    url,
+    apiKey,
+    qualityProfileId: parseInt(items.radarrQualityProfileId, 10) || 0,
+    rootFolder: items.radarrRootFolder || '',
+    minAvailability: items.radarrMinAvailability || 'released',
+    searchOnAdd: items.radarrSearchOnAdd !== false
+  };
+}
+
+async function hasRadarrPermission(url) {
+  try {
+    return await chrome.permissions.contains({ origins: [radarrOriginPattern(url)] });
+  } catch (e) {
+    return false;
+  }
+}
+
+function radarrFetch(cfg, path, options = {}, timeout = RADARR_TIMEOUT) {
+  const headers = {
+    'Accept': 'application/json',
+    'X-Api-Key': cfg.apiKey
+  };
+  if (options.body) headers['Content-Type'] = 'application/json';
+  return fetchWithTimeout(`${cfg.url}/api/v3${path}`, { ...options, headers }, timeout);
+}
+
+function radarrMovieUrl(cfg, movie) {
+  const slug = (movie && (movie.titleSlug || movie.tmdbId)) ? String(movie.titleSlug || movie.tmdbId) : '';
+  return slug ? `${cfg.url}/movie/${encodeURIComponent(slug)}` : cfg.url;
+}
+
+function radarrAddPageUrl(cfg, term) {
+  return `${cfg.url}/add/new?term=${encodeURIComponent(term)}`;
+}
+
+function radarrSearchTerm(movie) {
+  return sanitizeText(movie.year ? `${movie.title} ${movie.year}` : movie.title);
+}
+
+// Every Radarr answer has the same shape so the content script can paint it.
+function radarrResult(status, movie, extra = {}) {
+  const out = { destination: 'radarr', status, ...extra };
+  if (movie) {
+    out.title = movie.title || '';
+    out.year = movie.year || 0;
+    out.tmdbId = movie.tmdbId || 0;
+    out.titleSlug = movie.titleSlug || '';
+    out.radarrId = movie.id || 0;
+    out.hasFile = !!movie.hasFile;
+    out.monitored = !!movie.monitored;
+  }
+  return out;
+}
+
+function radarrFailure(cfg, e) {
+  if (e instanceof RadarrHttpError) {
+    if (e.status === 401) return radarrResult('unauthorized', null, { url: cfg.url });
+    return radarrResult('error', null, { url: cfg.url, message: e.message });
+  }
+  return radarrResult('unreachable', null, { url: cfg.url, message: (e && e.message) || 'Could not reach Radarr' });
+}
+
+// Find the movie in Radarr. Prefers an IMDb-ID lookup, then TMDB ID, then a
+// title search matched on normalized title + year (±1). Resolves to
+// { status: 'in_library' | 'missing' | 'not_found', movie } where `movie` is
+// Radarr's MovieResource: the library copy when it exists, otherwise the
+// lookup result (which is exactly what POST /movie wants back).
+async function radarrLookup(movie, cfg) {
+  let term;
+  if (movie.imdbId) term = `imdb:${movie.imdbId}`;
+  else if (movie.tmdbId) term = `tmdb:${movie.tmdbId}`;
+  else term = radarrSearchTerm(movie);
+
+  const res = await radarrFetch(cfg, `/movie/lookup?term=${encodeURIComponent(term)}`);
+  if (!res.ok) throw new RadarrHttpError(res.status);
+  const data = await res.json();
+  const results = Array.isArray(data) ? data : [];
+
+  let match = null;
+  if (movie.imdbId || movie.tmdbId) {
+    match = results[0] || null; // ID lookups are exact: zero or one result
+  } else {
+    const wantTitle = normalize(movie.title);
+    match = results.find(m => normalize(m.title || '') === wantTitle && yearsClose(m.year, movie.year)) || null;
+  }
+  if (!match) return { status: 'not_found', movie: null };
+  if (match.id > 0) return { status: 'in_library', movie: match };
+
+  // Lookup results only sometimes carry the library id; GET /movie?tmdbId=
+  // is the authoritative "is this already in my library" check.
+  if (match.tmdbId) {
+    const check = await radarrFetch(cfg, `/movie?tmdbId=${encodeURIComponent(match.tmdbId)}`);
+    if (check.ok) {
+      const existing = await check.json();
+      if (Array.isArray(existing) && existing.length > 0) {
+        return { status: 'in_library', movie: existing[0] };
+      }
+    }
+  }
+  return { status: 'missing', movie: match };
+}
+
+async function radarrResolve(movie) {
+  const cfg = await getRadarrConfig();
+  if (!cfg.enabled) return radarrResult('disabled');
+  if (!cfg.apiKey) return radarrResult('unconfigured', null, { url: cfg.url, message: 'Add your Radarr API key in ReelHop settings.' });
+  if (!(await hasRadarrPermission(cfg.url))) return radarrResult('permission', null, { url: cfg.url });
+
+  const canAdd = cfg.qualityProfileId > 0 && !!cfg.rootFolder;
+  try {
+    const found = await radarrLookup(movie, cfg);
+    if (found.status === 'in_library') {
+      return radarrResult('in_library', found.movie, { url: radarrMovieUrl(cfg, found.movie) });
+    }
+    if (found.status === 'missing') {
+      const term = movie.imdbId ? `imdb:${movie.imdbId}` : radarrSearchTerm(movie);
+      return radarrResult('missing', found.movie, { url: radarrAddPageUrl(cfg, term), canAdd });
+    }
+    return radarrResult('not_found', null, { url: radarrAddPageUrl(cfg, radarrSearchTerm(movie)) });
+  } catch (e) {
+    return radarrFailure(cfg, e);
+  }
+}
+
+// One-click add: re-check the library (the page may be stale), then POST the
+// lookup result back with the user's profile / root folder / availability.
+async function radarrAdd(movie) {
+  const cfg = await getRadarrConfig();
+  if (!cfg.enabled) return radarrResult('disabled');
+  if (!cfg.apiKey) return radarrResult('unconfigured', null, { url: cfg.url, message: 'Add your Radarr API key in ReelHop settings.' });
+  if (!(await hasRadarrPermission(cfg.url))) return radarrResult('permission', null, { url: cfg.url });
+  if (!(cfg.qualityProfileId > 0) || !cfg.rootFolder) {
+    return radarrResult('unconfigured', null, {
+      url: radarrAddPageUrl(cfg, radarrSearchTerm(movie)),
+      message: 'Choose a quality profile and root folder in ReelHop settings first.'
+    });
+  }
+
+  try {
+    const found = await radarrLookup(movie, cfg);
+    if (found.status === 'in_library') {
+      return radarrResult('in_library', found.movie, { url: radarrMovieUrl(cfg, found.movie), alreadyAdded: true });
+    }
+    if (found.status !== 'missing') {
+      return radarrResult('not_found', null, { url: radarrAddPageUrl(cfg, radarrSearchTerm(movie)) });
+    }
+
+    const body = {
+      ...found.movie,
+      id: 0,
+      qualityProfileId: cfg.qualityProfileId,
+      rootFolderPath: cfg.rootFolder,
+      monitored: true,
+      minimumAvailability: cfg.minAvailability,
+      tags: [],
+      addOptions: { searchForMovie: cfg.searchOnAdd, monitor: 'movieOnly' }
+    };
+    const res = await radarrFetch(cfg, '/movie', { method: 'POST', body: JSON.stringify(body) }, 15000);
+
+    if (res.status === 400) {
+      const errors = await res.json().catch(() => null);
+      const message = Array.isArray(errors)
+        ? errors.map(e => e && e.errorMessage).filter(Boolean).join(' ')
+        : 'Radarr rejected the movie.';
+      // A list sync or another client beat us to it: report the library copy.
+      if (/already/i.test(message)) {
+        const again = await radarrLookup(movie, cfg);
+        if (again.status === 'in_library') {
+          return radarrResult('in_library', again.movie, { url: radarrMovieUrl(cfg, again.movie), alreadyAdded: true });
+        }
+      }
+      return radarrResult('error', found.movie, { url: radarrAddPageUrl(cfg, radarrSearchTerm(movie)), message });
+    }
+    if (!res.ok) throw new RadarrHttpError(res.status);
+
+    const added = await res.json();
+    return radarrResult('in_library', added, { url: radarrMovieUrl(cfg, added), justAdded: true });
+  } catch (e) {
+    return radarrFailure(cfg, e);
+  }
+}
+
+// Popup "Connect": verify URL + key, and fetch the options the add flow needs.
+async function radarrTest(input) {
+  const cfg = { url: normalizeRadarrUrl(input.url), apiKey: (input.apiKey || '').trim() };
+  if (!cfg.url) return { ok: false, reason: 'bad_url' };
+  if (!cfg.apiKey) return { ok: false, reason: 'no_key' };
+  if (!(await hasRadarrPermission(cfg.url))) return { ok: false, reason: 'permission', url: cfg.url };
+
+  try {
+    const statusRes = await radarrFetch(cfg, '/system/status');
+    if (statusRes.status === 401) return { ok: false, reason: 'unauthorized' };
+    if (!statusRes.ok) return { ok: false, reason: 'http', status: statusRes.status };
+    const status = await statusRes.json();
+    if (status.appName && status.appName !== 'Radarr') {
+      return { ok: false, reason: 'wrong_app', appName: status.appName };
+    }
+
+    const [profilesRes, rootsRes] = await Promise.all([
+      radarrFetch(cfg, '/qualityprofile'),
+      radarrFetch(cfg, '/rootfolder')
+    ]);
+    const profiles = profilesRes.ok
+      ? (await profilesRes.json()).map(p => ({ id: p.id, name: p.name }))
+      : [];
+    const rootFolders = rootsRes.ok
+      ? (await rootsRes.json()).map(r => ({ id: r.id, path: r.path, freeSpace: r.freeSpace }))
+      : [];
+
+    return {
+      ok: true,
+      url: cfg.url,
+      version: status.version || '',
+      instanceName: status.instanceName || 'Radarr',
+      profiles,
+      rootFolders
+    };
+  } catch (e) {
+    return { ok: false, reason: 'unreachable', message: (e && e.message) || '' };
+  }
+}
+
+// ===========================================================================
+// Message router
+// ===========================================================================
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
     try {
       switch (msg.action) {
-        case 'resolveMovie':
-          sendResponse(await resolveMovie(msg.movie));
+        case 'plexResolve':
+          sendResponse(await plexResolve(msg.movie));
           break;
-        case 'testToken':
-          sendResponse(await testToken(msg.token));
+        case 'plexTest':
+          sendResponse(await plexTest(msg.token));
+          break;
+        case 'radarrResolve':
+          sendResponse(await radarrResolve(msg.movie));
+          break;
+        case 'radarrAdd':
+          sendResponse(await radarrAdd(msg.movie));
+          break;
+        case 'radarrTest':
+          sendResponse(await radarrTest(msg.config || {}));
+          break;
+        case 'openPopup':
+          // Best effort: lets an on-page "Needs access" button open settings.
+          try {
+            await chrome.action.openPopup();
+            sendResponse({ ok: true });
+          } catch (e) {
+            sendResponse({ ok: false });
+          }
           break;
         default:
           sendResponse({ error: `Unknown action: ${msg.action}` });
