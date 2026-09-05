@@ -30,27 +30,43 @@
         <span class="dest-note">Always on</span>
       </div>
       <div class="dest-body">
-        <div class="form-group">
-          <label for="plexToken">
-            Plex Token <span>(Optional)</span>
-          </label>
-          <input type="password" id="plexToken" placeholder="Paste your X-Plex-Token here..." autocomplete="off">
+        <div id="plexSignedOut">
+          <button id="plexSignInBtn" class="btn plex full">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 2.5h6l8.5 9.5-8.5 9.5h-6l8.5-9.5L3.5 2.5z"/></svg>
+            Sign in with Plex
+          </button>
           <small class="hint">
-            Without a token, buttons open Plex search. With one, they deep-link to the film on
-            <strong>your own server</strong> or on <strong>Plex Discover</strong>.
-            Stored only on this device and only ever sent to Plex.
+            Opens Plex's own sign-in page in a small window. ReelHop never sees your password;
+            it only receives a token, stored on this device. Without signing in, buttons open Plex search.
           </small>
+          <button id="plexTokenToggle" class="link-btn inline">Paste a token instead</button>
+          <div id="plexTokenManual" hidden>
+            <div class="form-group">
+              <label for="plexToken">Plex Token</label>
+              <input type="password" id="plexToken" placeholder="Paste your X-Plex-Token here..." autocomplete="off">
+              <small class="hint">Saved with <strong>Save Settings</strong>. Only ever sent to Plex.</small>
+            </div>
+            <button id="testBtn" class="btn secondary full">Test Token &amp; Server</button>
+          </div>
         </div>
 
-        <div class="form-group checkbox-group">
-          <label>
-            <input type="checkbox" id="autoSyncToken">
-            Auto-sync token from app.plex.tv
-          </label>
-          <small class="hint">
-            Reads the token from your own signed-in <strong>app.plex.tv</strong> session and
-            fills it in above. Off by default.
-          </small>
+        <div id="plexPending" hidden>
+          <div class="plex-account">
+            <span class="spinner" aria-hidden="true"></span>
+            <div class="plex-account-text">Finish signing in on the Plex window that just opened…</div>
+            <button id="plexCancelBtn" class="link-btn">Cancel</button>
+          </div>
+        </div>
+
+        <div id="plexSignedIn" hidden>
+          <div class="plex-account">
+            <svg class="plex-account-logo" viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 2.5h6l8.5 9.5-8.5 9.5h-6l8.5-9.5L3.5 2.5z"/></svg>
+            <div class="plex-account-text">
+              <div>Signed in as <strong id="plexUsername"></strong></div>
+              <div class="plex-account-sub" id="plexServers"></div>
+            </div>
+            <button id="plexSignOutBtn" class="link-btn">Sign out</button>
+          </div>
         </div>
 
         <div class="form-group">
@@ -62,8 +78,6 @@
             <option value="search_only">Universal Search</option>
           </select>
         </div>
-
-        <button id="testBtn" class="btn secondary full">Test Token &amp; Server</button>
       </div>
     </section>
 
@@ -179,7 +193,7 @@
 
     <div class="footer-links">
       <button id="clearCacheBtn" class="link-btn">Clear Cached Film IDs</button>
-      <a href="https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/" target="_blank" rel="noopener noreferrer">Find your Plex token &rarr;</a>
+      <a href="https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/" target="_blank" rel="noopener noreferrer">Where to find a Plex token &rarr;</a>
     </div>
   </div>
 

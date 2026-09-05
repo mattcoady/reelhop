@@ -4,6 +4,8 @@
 // extension only needs narrow host permissions: Plex's own domains, plus the
 // single Radarr origin the user grants at runtime from the popup.
 //
+// Sections: Plex (resolve + test), Plex sign-in (PIN flow), Radarr, router.
+//
 // Destinations each get their own section and their own message actions
 // (plexResolve, radarrResolve, radarrAdd, ...). The content script asks for
 // every enabled destination in parallel and paints whatever comes back, so a
@@ -52,9 +54,8 @@ async function getClientId() {
 }
 
 async function getPlexHeaders(token) {
-  return {
+  const headers = {
     'Accept': 'application/json',
-    'X-Plex-Token': token,
     'X-Plex-Client-Identifier': await getClientId(),
     'X-Plex-Product': 'ReelHop',
     'X-Plex-Version': chrome.runtime.getManifest().version,
@@ -62,6 +63,8 @@ async function getPlexHeaders(token) {
     'X-Plex-Device': 'Desktop',
     'X-Plex-Device-Name': 'ReelHop'
   };
+  if (token) headers['X-Plex-Token'] = token;
+  return headers;
 }
 
 function getSearchUrl(title, year) {
@@ -319,6 +322,227 @@ async function plexTest(token) {
 
   return { ok: true, username, serverNames };
 }
+
+// ===========================================================================
+// Plex sign-in (PIN flow)
+//
+// "Sign in with Plex" never sees a password: we ask plex.tv for a PIN, open
+// Plex's own sign-in page with it in a popup window, and poll the PIN until
+// Plex attaches an auth token. The in-flight session lives in
+// chrome.storage.session so a restarted service worker can pick it back up.
+// ===========================================================================
+
+const PLEX_PIN_POLL_MS = 2000;
+const PLEX_SIGNIN_KEY = 'plexSignIn';
+let plexPollTimer = null;
+let plexPollInFlight = false;
+
+async function getPlexSignIn() {
+  try {
+    const items = await chrome.storage.session.get(PLEX_SIGNIN_KEY);
+    return items[PLEX_SIGNIN_KEY] || null;
+  } catch (e) {
+    return null;
+  }
+}
+
+async function setPlexSignIn(session) {
+  try {
+    if (session) await chrome.storage.session.set({ [PLEX_SIGNIN_KEY]: session });
+    else await chrome.storage.session.remove(PLEX_SIGNIN_KEY);
+  } catch (e) {
+    // Session storage unavailable: polling just won't survive a worker restart.
+  }
+}
+
+function setToolbarBadge(text, color) {
+  try {
+    chrome.action.setBadgeText({ text });
+    if (color) chrome.action.setBadgeBackgroundColor({ color });
+  } catch (e) { /* non-fatal */ }
+}
+
+async function plexSignInStart() {
+  await plexSignInCancel(); // one sign-in at a time
+
+  const res = await fetchWithTimeout('https://plex.tv/api/v2/pins?strong=true', {
+    method: 'POST',
+    headers: await getPlexHeaders('')
+  }, 8000);
+  if (!res.ok) throw new Error(`Plex returned HTTP ${res.status} while creating a sign-in PIN`);
+  const pin = await res.json();
+  if (!pin || !pin.id || !pin.code) throw new Error('Plex did not return a sign-in PIN');
+
+  const params = new URLSearchParams({
+    clientID: await getClientId(),
+    code: pin.code,
+    'context[device][product]': 'ReelHop',
+    'context[device][deviceName]': 'ReelHop',
+    'context[device][platform]': 'Chrome'
+  });
+  const authUrl = `https://app.plex.tv/auth#?${params.toString()}`;
+
+  let windowId = null;
+  let tabId = null;
+  try {
+    const win = await chrome.windows.create({ url: authUrl, type: 'popup', width: 560, height: 740, focused: true });
+    windowId = win.id;
+  } catch (e) {
+    const tab = await chrome.tabs.create({ url: authUrl });
+    tabId = tab.id;
+  }
+
+  await setPlexSignIn({
+    status: 'pending',
+    pinId: pin.id,
+    expiresAt: Date.now() + ((pin.expiresIn || 1800) * 1000),
+    windowId,
+    tabId
+  });
+  schedulePlexPoll(0);
+  return { ok: true };
+}
+
+function schedulePlexPoll(delay) {
+  if (plexPollTimer) clearTimeout(plexPollTimer);
+  plexPollTimer = setTimeout(() => {
+    plexPollTimer = null;
+    pollPlexPin();
+  }, delay);
+}
+
+async function pollPlexPin() {
+  if (plexPollInFlight) return;
+  plexPollInFlight = true;
+  try {
+    // Reading session storage is an extension API call, which also resets
+    // the service worker's idle timer, so this loop keeps itself alive.
+    const session = await getPlexSignIn();
+    if (!session || session.status !== 'pending') return;
+
+    if (Date.now() > session.expiresAt) {
+      await finishPlexSignIn(session, { status: 'expired' });
+      return;
+    }
+
+    try {
+      const res = await fetchWithTimeout(`https://plex.tv/api/v2/pins/${encodeURIComponent(session.pinId)}`, {
+        headers: await getPlexHeaders('')
+      }, 8000);
+      if (res.status === 404) {
+        await finishPlexSignIn(session, { status: 'expired' });
+        return;
+      }
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.authToken) {
+          await completePlexSignIn(session, data.authToken);
+          return;
+        }
+      }
+    } catch (e) {
+      // Transient network trouble: keep polling until the PIN expires.
+    }
+    schedulePlexPoll(PLEX_PIN_POLL_MS);
+  } finally {
+    plexPollInFlight = false;
+  }
+}
+
+async function completePlexSignIn(session, token) {
+  let username = '';
+  let serverNames = [];
+  try {
+    const info = await plexTest(token);
+    if (info.ok) {
+      username = info.username || '';
+      serverNames = info.serverNames || [];
+    }
+  } catch (e) {
+    // The token still works; the popup retries the account lookup later.
+  }
+
+  await chrome.storage.local.set({ plexToken: token, plexUsername: username, plexServerNames: serverNames });
+  await finishPlexSignIn(session, { status: 'done', username });
+  setToolbarBadge('✓', '#00b34a');
+}
+
+// Record how the session ended, then close the sign-in window. The order
+// matters: closing the window fires onRemoved, which must not see 'pending'.
+// The popup reads the terminal status once (plexSignInStatus) and clears it.
+async function finishPlexSignIn(session, outcome) {
+  if (plexPollTimer) {
+    clearTimeout(plexPollTimer);
+    plexPollTimer = null;
+  }
+  await setPlexSignIn({ ...session, ...outcome, windowId: null, tabId: null });
+  if (session.windowId != null) {
+    try { await chrome.windows.remove(session.windowId); } catch (e) { /* already closed */ }
+  }
+  if (session.tabId != null) {
+    try { await chrome.tabs.remove(session.tabId); } catch (e) { /* already closed */ }
+  }
+}
+
+async function plexSignInCancel() {
+  const session = await getPlexSignIn();
+  if (session && session.status === 'pending') {
+    await finishPlexSignIn(session, { status: 'cancelled' });
+  } else if (session) {
+    await setPlexSignIn(null);
+  }
+  return { ok: true };
+}
+
+// Popup: where does sign-in stand? Terminal outcomes are reported once.
+async function plexSignInStatus() {
+  setToolbarBadge('');
+  const session = await getPlexSignIn();
+  if (!session) return { status: 'idle' };
+  if (session.status === 'pending') {
+    if (Date.now() > session.expiresAt) {
+      await finishPlexSignIn(session, { status: 'expired' });
+      await setPlexSignIn(null);
+      return { status: 'expired' };
+    }
+    schedulePlexPoll(0); // the worker may have restarted; make sure polling runs
+    return { status: 'pending' };
+  }
+  await setPlexSignIn(null);
+  return { status: session.status, username: session.username || '' };
+}
+
+async function plexSignOut() {
+  await chrome.storage.local.remove(['plexToken', 'plexUsername', 'plexServerNames']);
+  return { ok: true };
+}
+
+// The user closed the sign-in window themselves.
+chrome.windows.onRemoved.addListener(async (windowId) => {
+  const session = await getPlexSignIn();
+  if (session && session.status === 'pending' && session.windowId === windowId) {
+    await finishPlexSignIn(session, { status: 'cancelled' });
+  }
+});
+chrome.tabs.onRemoved.addListener(async (tabId) => {
+  const session = await getPlexSignIn();
+  if (session && session.status === 'pending' && session.tabId === tabId) {
+    await finishPlexSignIn(session, { status: 'cancelled' });
+  }
+});
+
+// Whenever the Plex token changes (sign-in, paste, sign-out) the cached
+// server list and film links describe a different account: drop them.
+chrome.storage.onChanged.addListener(async (changes, area) => {
+  if (area !== 'local' || !changes.plexToken) return;
+  try { await chrome.storage.session.remove('serverCache'); } catch (e) { /* non-fatal */ }
+  const all = await chrome.storage.local.get(null);
+  const keys = Object.keys(all).filter(k => k.startsWith('cacheTarget_'));
+  if (keys.length > 0) await chrome.storage.local.remove(keys);
+});
+
+// Resume a sign-in that was mid-flight when the worker was suspended.
+pollPlexPin();
 
 // ===========================================================================
 // Radarr
@@ -606,6 +830,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         case 'plexTest':
           sendResponse(await plexTest(msg.token));
+          break;
+        case 'plexSignInStart':
+          sendResponse(await plexSignInStart());
+          break;
+        case 'plexSignInStatus':
+          sendResponse(await plexSignInStatus());
+          break;
+        case 'plexSignInCancel':
+          sendResponse(await plexSignInCancel());
+          break;
+        case 'plexSignOut':
+          sendResponse(await plexSignOut());
           break;
         case 'radarrResolve':
           sendResponse(await radarrResolve(msg.movie));

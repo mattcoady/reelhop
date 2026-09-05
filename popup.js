@@ -5,9 +5,18 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Plex
   const tokenInput = $('plexToken');
-  const autoSyncCheckbox = $('autoSyncToken');
   const modeSelect = $('preferredMode');
   const testBtn = $('testBtn');
+  const plexSignedOut = $('plexSignedOut');
+  const plexPending = $('plexPending');
+  const plexSignedIn = $('plexSignedIn');
+  const plexSignInBtn = $('plexSignInBtn');
+  const plexCancelBtn = $('plexCancelBtn');
+  const plexSignOutBtn = $('plexSignOutBtn');
+  const plexTokenToggle = $('plexTokenToggle');
+  const plexTokenManual = $('plexTokenManual');
+  const plexUsernameEl = $('plexUsername');
+  const plexServersEl = $('plexServers');
 
   // Radarr
   const radarrEnabled = $('radarrEnabled');
@@ -67,6 +76,106 @@ document.addEventListener('DOMContentLoaded', () => {
       }, timeout);
     }
   }
+
+  // ---------------------------------------------------------------------------
+  // Plex account (Sign in with Plex)
+  // ---------------------------------------------------------------------------
+
+  let plexPendingPoll = null;
+
+  function showPlexState(state) {
+    plexSignedOut.hidden = state !== 'out';
+    plexPending.hidden = state !== 'pending';
+    plexSignedIn.hidden = state !== 'in';
+  }
+
+  function describeServers(names) {
+    return names && names.length > 0 ? `Servers: ${names.join(', ')}` : '';
+  }
+
+  async function refreshPlexAccount() {
+    const [items, status] = await Promise.all([
+      chrome.storage.local.get(['plexToken', 'plexUsername', 'plexServerNames']),
+      chrome.runtime.sendMessage({ action: 'plexSignInStatus' }).catch(() => null)
+    ]);
+
+    // One-time outcome of a sign-in that finished while the popup was closed.
+    if (status && status.status === 'done') {
+      showStatus([[{ text: '✓ Signed in to Plex' }, { text: status.username ? ` as ${status.username}` : '', strong: true }]], 'success', 5000);
+    } else if (status && status.status === 'expired') {
+      showStatus('⚠️ The Plex sign-in timed out. Try again.', 'error', 6000);
+    } else if (status && status.status === 'cancelled') {
+      showStatus('ℹ️ Plex sign-in was cancelled.', 'info', 4000);
+    }
+
+    const pending = !!status && status.status === 'pending';
+    if (pending) {
+      showPlexState('pending');
+      if (!plexPendingPoll) plexPendingPoll = setInterval(refreshPlexAccount, 1500);
+      return;
+    }
+    if (plexPendingPoll) {
+      clearInterval(plexPendingPoll);
+      plexPendingPoll = null;
+    }
+
+    if (!items.plexToken) {
+      showPlexState('out');
+      return;
+    }
+
+    showPlexState('in');
+    plexUsernameEl.textContent = items.plexUsername || 'your Plex account';
+    plexServersEl.textContent = describeServers(items.plexServerNames);
+
+    if (!items.plexUsername) {
+      // A pasted token: look up who it belongs to, once.
+      const info = await chrome.runtime.sendMessage({ action: 'plexTest', token: items.plexToken }).catch(() => null);
+      if (info && info.ok) {
+        chrome.storage.local.set({ plexUsername: info.username || '', plexServerNames: info.serverNames || [] });
+        plexUsernameEl.textContent = info.username || 'your Plex account';
+        plexServersEl.textContent = describeServers(info.serverNames);
+      } else if (info && info.ok === false) {
+        plexServersEl.textContent = 'Plex rejected this token. Sign out and sign in again.';
+      }
+    }
+  }
+
+  plexSignInBtn.addEventListener('click', async () => {
+    plexSignInBtn.disabled = true;
+    try {
+      const res = await chrome.runtime.sendMessage({ action: 'plexSignInStart' });
+      if (!res || res.error) {
+        showStatus(`❌ Could not start Plex sign-in: ${res?.error || 'no response'}`, 'error', 7000);
+        return;
+      }
+      // The sign-in window takes focus, which closes this popup. When it is
+      // reopened, refreshPlexAccount() shows the pending or signed-in state.
+      refreshPlexAccount();
+    } catch (e) {
+      showStatus(`❌ Could not start Plex sign-in: ${e.message}`, 'error', 7000);
+    } finally {
+      plexSignInBtn.disabled = false;
+    }
+  });
+
+  plexCancelBtn.addEventListener('click', async () => {
+    await chrome.runtime.sendMessage({ action: 'plexSignInCancel' }).catch(() => {});
+    refreshPlexAccount();
+  });
+
+  plexSignOutBtn.addEventListener('click', async () => {
+    await chrome.runtime.sendMessage({ action: 'plexSignOut' }).catch(() => {});
+    tokenInput.value = '';
+    showStatus('ℹ️ Signed out of Plex. Buttons now open Plex search.', 'info', 4000);
+    refreshPlexAccount();
+  });
+
+  plexTokenToggle.addEventListener('click', () => {
+    plexTokenManual.hidden = !plexTokenManual.hidden;
+    plexTokenToggle.textContent = plexTokenManual.hidden ? 'Paste a token instead' : 'Hide the token field';
+    if (!plexTokenManual.hidden) tokenInput.focus();
+  });
 
   // ---------------------------------------------------------------------------
   // Radarr helpers
@@ -146,8 +255,6 @@ document.addEventListener('DOMContentLoaded', () => {
   // ---------------------------------------------------------------------------
 
   chrome.storage.local.get([
-    'plexToken',
-    'autoSyncToken',
     'openInNewTab',
     'preferredMode',
     'showSidebarButton',
@@ -164,8 +271,6 @@ document.addEventListener('DOMContentLoaded', () => {
     'radarrProfiles',
     'radarrRootFolders'
   ], (items) => {
-    if (items.plexToken) tokenInput.value = items.plexToken;
-    autoSyncCheckbox.checked = items.autoSyncToken === true;
     if (items.preferredMode) modeSelect.value = items.preferredMode;
     if (typeof items.openInNewTab !== 'undefined') newTabCheckbox.checked = items.openInNewTab;
     if (typeof items.showSidebarButton !== 'undefined') showSidebarCheckbox.checked = items.showSidebarButton;
@@ -181,6 +286,7 @@ document.addEventListener('DOMContentLoaded', () => {
     renderRadarrOptions(items.radarrProfiles || [], items.radarrRootFolders || [],
       items.radarrQualityProfileId, items.radarrRootFolder);
     syncRadarrBody();
+    refreshPlexAccount();
   });
 
   // ---------------------------------------------------------------------------
@@ -207,9 +313,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     if (radarrUrl) radarrUrlInput.value = radarrUrl;
 
-    chrome.storage.local.set({
-      plexToken: tokenInput.value.trim(),
-      autoSyncToken: autoSyncCheckbox.checked,
+    const payload = {
       preferredMode: modeSelect.value,
       openInNewTab: newTabCheckbox.checked,
       showSidebarButton: showSidebarCheckbox.checked,
@@ -223,7 +327,16 @@ document.addEventListener('DOMContentLoaded', () => {
       radarrRootFolder: radarrRootSelect.value || '',
       radarrMinAvailability: radarrAvailSelect.value,
       radarrSearchOnAdd: radarrSearchOnAdd.checked
-    }, () => {
+    };
+    // The token field only exists in "paste a token" mode; a Sign-in-with-Plex
+    // token must never be clobbered by an empty hidden field.
+    if (!plexTokenManual.hidden) {
+      payload.plexToken = tokenInput.value.trim();
+      payload.plexUsername = '';
+      payload.plexServerNames = [];
+    }
+    chrome.storage.local.set(payload, () => {
+      refreshPlexAccount();
       if (warnings.length > 0) {
         showStatus(['✓ Settings saved.', ...warnings.map(w => `⚠️ ${w}`)], 'info', 9000);
       } else {

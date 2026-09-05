@@ -16,7 +16,7 @@ Hop from the movie sites you already browse to your own media stack. ReelHop is 
 - **Every destination, one button each**
   - On **Letterboxd** film pages: a stacked group of destination buttons in the sidebar, plus a Plex badge in "Where to watch" and a Plex link beside the IMDb / TMDb links.
   - On **IMDb** title pages: a row of destination pills under the title, styled to match IMDb's own buttons (dark and white "Reference view" both handled).
-- **Plex** — with an optional Plex token, links deep-link straight to the film **on your own server** if it's in your library, falling back to its **Plex Discover** page. Without a token, links open Plex search — zero setup.
+- **Plex** — click **Sign in with Plex** (or paste a token) and links deep-link straight to the film **on your own server** if it's in your library, falling back to its **Plex Discover** page. Signed out, links open Plex search — zero setup.
 - **Radarr** — the button tells you where a movie stands (**Downloaded**, **Wanted**, **Unmonitored**) and opens it in Radarr; if it isn't in Radarr yet, one click **adds it** with your chosen quality profile, root folder and minimum availability, optionally kicking off a search right away. TV shows never get a Radarr button (that's Sonarr's job, coming next).
 - **Movies and TV** — Plex matching covers films and TV shows / mini-series, by IMDb ID when available, with title + year as fallback. No confident match means a search link, never a wrong title.
 - **Fast** — Plex results are cached for 7 days; Radarr status is re-checked on every visit so it's never stale after you add something.
@@ -44,16 +44,16 @@ ReelHop works out of the box with Plex search links. Everything below is optiona
 
 ### Plex (deep links to your server / Discover)
 
-**Easiest** — in the popup, enable **"Auto-sync token from app.plex.tv"** (off by default), then visit [app.plex.tv](https://app.plex.tv) while signed in. The token is picked up from your own session automatically.
+**Sign in with Plex** — click the button in the popup. A small Plex window opens; sign in there (two-factor included) and it closes itself when done. The popup then shows your account name and servers. This uses Plex's PIN flow: ReelHop never sees your password, only the resulting token, which stays on this device. Use **Sign out** in the popup to remove it.
 
-**Manually**:
+**Paste a token instead** — if you'd rather not sign in:
 
 1. Sign in at [app.plex.tv](https://app.plex.tv) and open any item in your library.
 2. `...` (More) menu → **Get Info** → **View XML**.
 3. Copy the `X-Plex-Token=...` value from the end of the URL in the address bar.
-4. Paste it into the popup and hit **Save Settings**.
+4. In the popup, click **Paste a token instead**, paste it, and hit **Save Settings**.
 
-Use **Test Token & Server** to verify — it shows your account name and detected servers.
+Use **Test Token & Server** to verify a pasted token — it shows your account name and detected servers.
 
 **Note on server connections**: ReelHop only contacts your Plex servers over their secure `*.plex.direct` HTTPS addresses (Plex's default for all signed-in servers). Servers reachable only via plain-HTTP LAN addresses won't be found.
 
@@ -71,8 +71,8 @@ Without a profile and root folder chosen, the on-page button still works — it 
 
 | Setting | Default | What it does |
 |---|---|---|
-| Plex Token | empty | Enables server / Discover deep-linking |
-| Auto-sync token | off | Reads the token from your own app.plex.tv session |
+| Sign in with Plex | signed out | PIN-based sign-in on plex.tv; enables server / Discover deep-linking |
+| Plex Token (paste) | empty | Manual alternative to signing in |
 | Link Destination Priority | Smart | Server first → Discover → Search, or pin one destination |
 | Radarr: Enable | off | Shows a Radarr button on movie pages |
 | Radarr: URL / API key | empty | Where Radarr lives and how to authenticate |
@@ -88,6 +88,7 @@ Without a profile and root folder chosen, the on-page button still works — it 
 
 - A content script reads the film's title, year, IMDb / TMDb IDs and media type from the page and injects the buttons. Each destination is resolved independently and in parallel, so a slow or offline Radarr never delays the Plex link.
 - All network calls happen in the background service worker. It has permission for Plex's own domains (`plex.tv`, `discover.provider.plex.tv`, `*.plex.direct`) out of the box; access to your Radarr host is an **optional permission** that Chrome grants only when you save a Radarr URL in the popup, and only for that host.
+- **Sign in with Plex** is Plex's PIN flow: the worker asks `plex.tv` for a PIN, opens Plex's hosted sign-in page in a popup window with that PIN, and polls the PIN until Plex attaches a token. Changing the token (sign-in, paste, sign-out) drops the cached server list and film links so pages re-resolve for the new account.
 - **Plex**: with a token, it searches your servers' libraries (`/hubs/search`) and Plex Discover across both movie and TV-show types, matching by IMDb ID first, then normalized title + year (±1). Results are cached locally for 7 days (clearable from the popup).
 - **Radarr**: it looks the movie up (`/api/v3/movie/lookup` by IMDb ID, then TMDB ID, then title), confirms whether it's already in your library (`/api/v3/movie?tmdbId=`), and on click POSTs the lookup result back to `/api/v3/movie` with your profile, root folder and availability. The API key is sent only as the `X-Api-Key` header, only to your configured URL.
 
@@ -113,10 +114,12 @@ manifest.json     MV3 manifest
 background.js     Service worker — all Plex and Radarr API calls
 content.js        Per-site DOM scraping + destination buttons
 content.css       Injected button styling
-plex-sync.js      Opt-in Plex token auto-sync on app.plex.tv
 popup.html/js/css Settings popup
 generate_icons.py Regenerates the icon PNGs
+test/             Node tests for the background worker (fake Plex + Radarr)
 ```
+
+Run the tests with `node test/background.test.js` (no dependencies).
 
 Test on any Letterboxd film page (e.g. [The Dark Knight](https://letterboxd.com/film/the-dark-knight/)) or IMDb title page (e.g. [Inception](https://www.imdb.com/title/tt1375666/)).
 
@@ -145,7 +148,7 @@ A destination is (a) a section in `background.js` exposing `<name>Resolve` / `<n
 ### Packaging for the Chrome Web Store
 
 ```bash
-zip -r reelhop.zip manifest.json background.js content.js content.css plex-sync.js popup.html popup.js popup.css icons
+zip -r reelhop.zip manifest.json background.js content.js content.css popup.html popup.js popup.css icons
 ```
 
 Store listing reminders:
