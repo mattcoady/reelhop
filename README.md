@@ -72,11 +72,14 @@ Without a profile and root folder chosen, the on-page button still works — it 
 
 The settings page opens in a tab (toolbar icon, or the extension's **Details → Extension options**). There is no Save button: each change is stored the moment you make it.
 
+Each card carries a status dot, mirrored in the side nav. It reports state, not branding: **grey** is off, **green** is working, **amber** needs a step from you, **red** is broken, and a **pulsing** dot means something is in progress. Hover a dot for the reason in words.
+
 | Setting | Default | What it does |
 |---|---|---|
 | Sign in with Plex | signed out | PIN-based sign-in on plex.tv; enables server / Discover deep-linking |
 | Plex token (paste) | empty | Manual alternative to signing in, verified before it is kept |
 | Link destination | Smart | Server first → Discover → Search, or pin one destination |
+| Plex: Library index | builds on demand | Shows how many of your Plex titles are indexed for poster badges, and rebuilds it |
 | Radarr | off | Shows a Radarr button on movie pages |
 | Radarr: address / API key | empty | Where Radarr lives and how to authenticate |
 | Radarr: Quality profile / Root folder | first available | Used for one-click adds |
@@ -87,7 +90,7 @@ The settings page opens in a tab (toolbar icon, or the extension's **Details →
 | Letterboxd: Availability filter | on | Adds All / On Plex / Not on Plex above poster grids |
 | Letterboxd / IMDb placements | all on | Choose which buttons and links to show, per site |
 | Open links in a new tab | on | Open destination links in a new tab |
-| Data: Clear cache | — | Drops the 7-day film-link cache, the Plex library index and the cached server list |
+| Data: Clear cache | — | Drops the 7-day film-link cache, both library indexes and the cached server list |
 
 ---
 
@@ -97,7 +100,7 @@ The settings page opens in a tab (toolbar icon, or the extension's **Details →
 - All network calls happen in the background service worker. It has permission for Plex's own domains (`plex.tv`, `discover.provider.plex.tv`, `*.plex.direct`) out of the box; access to your Radarr host is an **optional permission** that Chrome grants only when you press **Connect** on the settings page, and only for that host.
 - **Sign in with Plex** is Plex's PIN flow: the worker asks `plex.tv` for a PIN, opens Plex's hosted sign-in page in a popup window with that PIN, and polls the PIN until Plex attaches a token. Changing the token (sign-in, paste, sign-out) drops the cached server list and film links so pages re-resolve for the new account.
 - **Plex**: with a token, it searches your servers' libraries (`/hubs/search`) and Plex Discover across both movie and TV-show types, matching by IMDb ID first, then normalized title + year (±1). Results are cached locally for 7 days (clearable from the settings page).
-- **Poster badges**: searching per poster would mean dozens of requests per grid, so the worker instead lists every movie and show section once (`/library/sections/<id>/all`, trimmed to title, year and rating key) and keeps that index in session storage for 30 minutes. The content script sends one message per batch of posters and matches locally on normalized title + year (±1); a title that appears twice with no year to separate it gets no badge rather than a wrong one.
+- **Poster badges**: searching per poster would mean dozens of requests per grid, so the worker instead lists every movie and show section once (`/library/sections/<id>/all`, trimmed to title, year and rating key) and keeps that index in session storage for 30 minutes. The build publishes its state to session storage as it goes, so the settings page can show it live and offer a **Build now** / **Rebuild** button wherever the build was actually started. The content script sends one message per batch of posters and matches locally on normalized title + year (±1); a title that appears twice with no year to separate it gets no badge rather than a wrong one.
 - **Poster + buttons**: Radarr has no batch lookup, so the worker pulls the library once (`GET /api/v3/movie`), trims it to what matching needs, and answers a whole grid from that. The index is held for five minutes and dropped the moment anything is added or a Radarr setting changes. Clicking a + sends the film's title and year to `radarrAdd`, which re-checks Radarr before posting, so a stale + on something already there reports itself as added rather than erroring.
 - **Availability filter**: purely local. It reuses the answers the badges already have, hides the grid items the mode excludes, and never asks Plex anything extra. Posters still waiting on an answer stay visible (the bar says "Checking Plex…") so nothing disappears on a guess, and if a filter empties the page it offers a **Show all** button rather than leaving you on a blank grid. It appears only on pages built around one grid of at least eight films, so preview strips and film pages are left alone.
 - **Radarr**: it looks the movie up (`/api/v3/movie/lookup` by IMDb ID, then TMDB ID, then title), confirms whether it's already in your library (`/api/v3/movie?tmdbId=`), and on click POSTs the lookup result back to `/api/v3/movie` with your profile, root folder and availability. The API key is sent only as the `X-Api-Key` header, only to your configured URL.

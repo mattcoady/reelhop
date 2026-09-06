@@ -44,6 +44,12 @@ document.addEventListener('DOMContentLoaded', () => {
   const showPosterAddCheckbox = $('showPosterAdd');
   const showImdbButtonCheckbox = $('showImdbButton');
 
+  // Plex library index
+  const plexIndexStatusEl = $('plexIndexStatus');
+  const plexIndexDesc = $('plexIndexDesc');
+  const plexIndexBtn = $('plexIndexBtn');
+  const plexIndexNote = $('plexIndexNote');
+
   // Data
   const clearCacheBtn = $('clearCacheBtn');
   const cacheCountEl = $('cacheCount');
@@ -135,16 +141,38 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
+  // A source is "on" when at least one of its placements is, so its dot has to
+  // follow every one of them.
+  for (const id of ['showSidebarButton', 'showWatchPanel', 'showDetailsLink',
+                    'showPosterBadges', 'showPosterAdd', 'showImdbButton']) {
+    $(id).addEventListener('change', refreshSourceDots);
+  }
+
   // ---------------------------------------------------------------------------
   // Plex account (Sign in with Plex)
   // ---------------------------------------------------------------------------
 
   let plexPendingPoll = null;
 
+  let plexAccountState = 'out';
+  let plexIndexState = 'none';
+
+  function refreshPlexDot(indexStatus) {
+    if (indexStatus !== undefined) plexIndexState = indexStatus;
+    else indexStatus = plexIndexState;
+    if (plexAccountState === 'pending') return setDot('Plex', 'busy', 'Plex: signing in');
+    if (plexAccountState !== 'in') return setDot('Plex', '', 'Plex: signed out, links open Plex search');
+    if (indexStatus === 'building') return setDot('Plex', 'busy', 'Plex: indexing your libraries');
+    if (indexStatus === 'unreachable' || indexStatus === 'error') return setDot('Plex', 'warn', 'Plex: signed in, but no server answered');
+    setDot('Plex', 'on', 'Plex: signed in');
+  }
+
   function showPlexState(state) {
+    plexAccountState = state;
     plexSignedOut.hidden = state !== 'out';
     plexPending.hidden = state !== 'pending';
     plexSignedIn.hidden = state !== 'in';
+    refreshPlexDot();
   }
 
   function describeServers(names) {
@@ -384,6 +412,11 @@ document.addEventListener('DOMContentLoaded', () => {
   function setConn(text, tone) {
     radarrConn.textContent = text;
     radarrConn.className = `conn-status ${tone}`;
+    if (!radarrEnabled.checked) setDot('Radarr', '', 'Radarr: turned off');
+    else if (tone === 'ok') setDot('Radarr', 'on', `Radarr: ${text.toLowerCase()}`);
+    else if (tone === 'err') setDot('Radarr', 'err', `Radarr: ${text.toLowerCase()}`);
+    else if (tone === 'warn') setDot('Radarr', 'warn', `Radarr: ${text.toLowerCase()}`);
+    else setDot('Radarr', 'warn', 'Radarr: on, but not connected yet');
   }
 
   function radarrFailureMessage(result, url) {
@@ -439,6 +472,7 @@ document.addEventListener('DOMContentLoaded', () => {
   function syncRadarrBody() {
     radarrBody.hidden = !radarrEnabled.checked;
     radarrOff.hidden = radarrEnabled.checked;
+    if (!radarrEnabled.checked) setDot('Radarr', '', 'Radarr: turned off');
   }
 
   radarrEnabled.addEventListener('change', () => {
@@ -534,6 +568,101 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // Status dots
+  //
+  // One per card, mirrored in the side nav. They report state, not brand:
+  // grey off, green working, amber needs a step, red broken, pulsing busy.
+  // ---------------------------------------------------------------------------
+
+  function setDot(name, tone, label) {
+    for (const el of [$(`dot${name}`), $(`navDot${name}`)]) {
+      if (!el) continue;
+      el.className = `dest-dot ${tone}`.trim();
+      el.title = label;
+      el.setAttribute('aria-label', label);
+    }
+  }
+
+  function refreshSourceDots() {
+    const lb = showSidebarCheckbox.checked || showWatchPanelCheckbox.checked ||
+               showDetailsLinkCheckbox.checked || showPosterBadgesCheckbox.checked ||
+               showPosterAddCheckbox.checked;
+    setDot('Letterboxd', lb ? 'on' : '', lb ? 'Letterboxd: showing' : 'Letterboxd: everything turned off');
+    const imdb = showImdbButtonCheckbox.checked;
+    setDot('Imdb', imdb ? 'on' : '', imdb ? 'IMDb: showing' : 'IMDb: turned off');
+  }
+
+  // ---------------------------------------------------------------------------
+  // Plex library index
+  // ---------------------------------------------------------------------------
+
+  function relativeMinutes(timestamp) {
+    const mins = Math.max(0, Math.round((Date.now() - timestamp) / 60000));
+    return mins < 1 ? 'just now' : `${mins} min ago`;
+  }
+
+  function setIndexStatus(text, tone) {
+    plexIndexStatusEl.textContent = text;
+    plexIndexStatusEl.className = `conn-status ${tone}`.trim();
+  }
+
+  function renderIndexStatus(info) {
+    const status = (info && info.status) || 'none';
+    if (status === 'building') {
+      setIndexStatus('Indexing…', 'busy');
+      plexIndexDesc.textContent = 'Reading the titles in your Plex libraries. This can take a moment on a big server.';
+      plexIndexBtn.disabled = true;
+      plexIndexBtn.textContent = 'Indexing…';
+      return status;
+    }
+    plexIndexBtn.disabled = status === 'no_token';
+    plexIndexBtn.textContent = status === 'ready' ? 'Rebuild' : 'Build now';
+
+    if (status === 'no_token') {
+      setIndexStatus('Needs sign-in', 'muted');
+      plexIndexDesc.textContent = 'Sign in to Plex and the index builds from your own libraries.';
+    } else if (status === 'ready') {
+      const n = info.entries.toLocaleString();
+      setIndexStatus(`${n} title${info.entries === 1 ? '' : 's'}`, info.stale ? 'warn' : 'ok');
+      plexIndexDesc.textContent = `From ${info.servers} server${info.servers === 1 ? '' : 's'}, built ${relativeMinutes(info.timestamp)}.` +
+        (info.stale ? ' It will refresh on the next grid you open.' : '');
+    } else if (status === 'unreachable') {
+      setIndexStatus('No server reached', 'err');
+      plexIndexDesc.textContent = 'None of your Plex servers answered. Poster badges stay off until one does.';
+    } else if (status === 'error') {
+      setIndexStatus('Failed', 'err');
+      plexIndexDesc.textContent = info.message || 'The index could not be built.';
+    } else {
+      setIndexStatus('Not built', 'muted');
+      plexIndexDesc.textContent = 'Builds itself the first time you open a Letterboxd grid, or press Build now.';
+    }
+    return status;
+  }
+
+  async function refreshPlexIndex() {
+    const info = await chrome.runtime.sendMessage({ action: 'plexIndexStatus' }).catch(() => null);
+    const status = renderIndexStatus(info);
+    refreshPlexDot(status);
+    refreshCacheCount();
+    return status;
+  }
+
+  plexIndexBtn.addEventListener('click', async () => {
+    hideNote(plexIndexNote);
+    renderIndexStatus({ status: 'building' });
+    refreshPlexDot('building');
+    const info = await chrome.runtime.sendMessage({ action: 'plexIndexRebuild' }).catch((e) => ({ status: 'error', message: e.message }));
+    const status = renderIndexStatus(info);
+    refreshPlexDot(status);
+    refreshCacheCount();
+    if (status === 'ready') {
+      showNote(plexIndexNote, `Indexed ${info.entries.toLocaleString()} title${info.entries === 1 ? '' : 's'}. Letterboxd grids will use it right away.`, 'success', 5000);
+    } else if (status === 'unreachable' || status === 'error') {
+      showNote(plexIndexNote, info.message || 'Could not reach any of your Plex servers.', 'error', 0);
+    }
+  });
+
+  // ---------------------------------------------------------------------------
   // Data
   // ---------------------------------------------------------------------------
 
@@ -542,43 +671,38 @@ document.addEventListener('DOMContentLoaded', () => {
     return Object.keys(items).filter(k => k.startsWith('cacheTarget_'));
   }
 
-  // The worker keeps a per-session index of every title on the user's Plex
-  // servers for poster badges; it lives in session storage.
-  async function libraryIndexSummary() {
+  // The Plex card reports the index itself; here we only need to know whether
+  // there is one to clear.
+  async function hasLibraryIndex() {
     try {
       const { libraryIndex } = await chrome.storage.session.get('libraryIndex');
-      if (!libraryIndex || !Array.isArray(libraryIndex.entries)) return '';
-      const n = libraryIndex.entries.length;
-      const servers = (libraryIndex.servers || []).length;
-      const mins = Math.max(0, Math.round((Date.now() - libraryIndex.timestamp) / 60000));
-      return `Plex library index: ${n.toLocaleString()} title${n === 1 ? '' : 's'} from ${servers} server${servers === 1 ? '' : 's'}, refreshed ${mins < 1 ? 'just now' : `${mins} min ago`}.`;
+      return !!(libraryIndex && Array.isArray(libraryIndex.entries));
     } catch (e) {
-      return '';
+      return false;
     }
   }
 
   async function refreshCacheCount() {
     const keys = await cacheKeys();
-    const index = await libraryIndexSummary();
-    const links = keys.length === 0
+    const hasIndex = await hasLibraryIndex();
+    cacheCountEl.textContent = keys.length === 0
       ? 'No cached film links.'
       : `${keys.length} cached film link${keys.length === 1 ? '' : 's'}.`;
-    cacheCountEl.textContent = index ? `${links} ${index}` : links;
-    clearCacheBtn.disabled = keys.length === 0 && !index;
+    clearCacheBtn.disabled = keys.length === 0 && !hasIndex;
   }
 
   clearCacheBtn.addEventListener('click', async () => {
     const keys = await cacheKeys();
-    const hadIndex = !!(await libraryIndexSummary());
-    try { await chrome.storage.session.remove(['serverCache', 'libraryIndex']); } catch (e) {}
+    const hadIndex = await hasLibraryIndex();
+    try { await chrome.storage.session.remove(['serverCache', 'libraryIndex', 'libraryIndexState', 'radarrIndex']); } catch (e) {}
     if (keys.length > 0) await chrome.storage.local.remove(keys);
     const parts = [];
     if (keys.length > 0) parts.push(`${keys.length} cached film link${keys.length === 1 ? '' : 's'}`);
-    if (hadIndex) parts.push('the Plex library index');
+    if (hadIndex) parts.push('the Plex and Radarr library indexes');
     parts.push('the cached server list');
     const list = parts.length > 1 ? `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}` : parts[0];
     showNote(dataNote, `Cleared ${list}. Pages rebuild them on the next visit.`, 'info', 4000);
-    refreshCacheCount();
+    refreshPlexIndex();
   });
 
   // ---------------------------------------------------------------------------
@@ -654,8 +778,13 @@ document.addEventListener('DOMContentLoaded', () => {
     if (area === 'session' && changes.optionsFocus && changes.optionsFocus.newValue) {
       consumeFocusRequest();
     }
+    // A grid page (or another settings tab) can start a build at any time.
+    if (area === 'session' && changes.libraryIndexState) {
+      refreshPlexIndex();
+    }
     if (area === 'local' && (changes.plexToken || changes.plexUsername)) {
       refreshPlexAccount();
+      refreshPlexIndex();
     }
   });
 
@@ -705,8 +834,10 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     syncRadarrBody();
 
+    refreshSourceDots();
     refreshPlexAccount();
-    if (radarrEnabled.checked) refreshRadarrConn();
+    refreshPlexIndex();
+    if (radarrEnabled.checked) refreshRadarrConn(); else setDot('Radarr', '', 'Radarr: turned off');
     refreshCacheCount();
     updateNav();
     if (location.hash.length > 1) focusSection(location.hash.slice(1));

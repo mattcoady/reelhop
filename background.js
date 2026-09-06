@@ -311,6 +311,13 @@ const LIBRARY_FETCH_TIMEOUT = 30000;      // one listing can be a few MB on a bi
 let libraryIndexMemo = null;    // { timestamp, servers, entries, byTitle }
 let libraryIndexPromise = null; // in-flight build shared by concurrent tabs
 
+// A rebuild can take a while on a big library, and it starts wherever the
+// user happens to be. Publishing the state to session storage lets the
+// settings page show it live (chrome.storage.onChanged fires there too).
+function setLibraryIndexState(state) {
+  return chrome.storage.session.set({ libraryIndexState: { ...state, at: Date.now() } }).catch(() => {});
+}
+
 // Fields to keep per item; Plex's own clients use the same exclusion
 // parameters to slim the listing (harmless on servers that ignore them).
 const LIBRARY_LISTING_QUERY = 'includeGuids=1' +
@@ -411,7 +418,14 @@ async function getLibraryIndex(token) {
 
   if (!libraryIndexPromise) {
     libraryIndexPromise = (async () => {
-      const built = await fetchLibraryIndex(token);
+      await setLibraryIndexState({ status: 'building' });
+      let built;
+      try {
+        built = await fetchLibraryIndex(token);
+      } catch (e) {
+        await setLibraryIndexState({ status: 'error', message: e.message });
+        throw e;
+      }
       const index = { timestamp: Date.now(), servers: built.servers, entries: built.entries, reachable: built.reachable };
       // Nothing reachable: don't cache the empty answer for half an hour.
       if (built.reachable > 0) {
@@ -421,8 +435,10 @@ async function getLibraryIndex(token) {
         } catch (e) {
           console.warn('[ReelHop] Could not store the library index (too large?):', e);
         }
+        await setLibraryIndexState({ status: 'ready', entries: index.entries.length, servers: index.servers.length });
         return libraryIndexMemo;
       }
+      await setLibraryIndexState({ status: 'unreachable' });
       return { ...index, byTitle: new Map() };
     })().finally(() => { libraryIndexPromise = null; });
   }
@@ -482,6 +498,55 @@ async function plexLibraryMatch(films) {
     };
   }
   return { ok: true, matches, indexed: index.entries.length, servers: index.servers.length };
+}
+
+// What the settings page shows next to "Library index".
+async function plexIndexStatus() {
+  const { plexToken } = await chrome.storage.local.get('plexToken');
+  if (!plexToken) return { status: 'no_token' };
+
+  let stored = {};
+  try {
+    stored = await chrome.storage.session.get(['libraryIndex', 'libraryIndexState']);
+  } catch (e) { /* session storage unavailable */ }
+
+  if (libraryIndexPromise || (stored.libraryIndexState && stored.libraryIndexState.status === 'building')) {
+    return { status: 'building' };
+  }
+
+  const index = libraryIndexMemo || stored.libraryIndex;
+  if (index && Array.isArray(index.entries)) {
+    return {
+      status: 'ready',
+      entries: index.entries.length,
+      servers: (index.servers || []).length,
+      timestamp: index.timestamp,
+      stale: Date.now() - index.timestamp >= LIBRARY_INDEX_TTL
+    };
+  }
+
+  const last = stored.libraryIndexState;
+  if (last && (last.status === 'error' || last.status === 'unreachable')) {
+    return { status: last.status, message: last.message };
+  }
+  return { status: 'none' };
+}
+
+// Build (or rebuild) the index on demand, so the user doesn't have to open a
+// Letterboxd grid to get one. Resolves once the build finishes.
+async function plexIndexRebuild() {
+  const { plexToken } = await chrome.storage.local.get('plexToken');
+  if (!plexToken) return { status: 'no_token' };
+  libraryIndexMemo = null;
+  try {
+    await chrome.storage.session.remove('libraryIndex');
+  } catch (e) { /* non-fatal */ }
+  try {
+    await getLibraryIndex(plexToken);
+  } catch (e) {
+    return { status: 'error', message: e.message };
+  }
+  return plexIndexStatus();
 }
 
 async function plexTest(token) {
@@ -730,7 +795,7 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
 chrome.storage.onChanged.addListener(async (changes, area) => {
   if (area !== 'local' || !changes.plexToken) return;
   libraryIndexMemo = null;
-  try { await chrome.storage.session.remove(['serverCache', 'libraryIndex']); } catch (e) { /* non-fatal */ }
+  try { await chrome.storage.session.remove(['serverCache', 'libraryIndex', 'libraryIndexState']); } catch (e) { /* non-fatal */ }
   const all = await chrome.storage.local.get(null);
   const keys = Object.keys(all).filter(k => k.startsWith('cacheTarget_'));
   if (keys.length > 0) await chrome.storage.local.remove(keys);
@@ -1177,6 +1242,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         case 'plexTest':
           sendResponse(await plexTest(msg.token));
+          break;
+        case 'plexIndexStatus':
+          sendResponse(await plexIndexStatus());
+          break;
+        case 'plexIndexRebuild':
+          sendResponse(await plexIndexRebuild());
           break;
         case 'plexLibraryMatch':
           // Poster badges: many films at once, matched against the library index.

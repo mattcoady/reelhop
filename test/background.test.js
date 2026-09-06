@@ -73,7 +73,7 @@ const routedFetch = (url, opts) => {
 
 const ctx = { chrome, fetch: routedFetch, AbortController, setTimeout, clearTimeout, console, crypto, URL, URLSearchParams, encodeURIComponent, JSON, Math, Promise, Date };
 vm.createContext(ctx);
-vm.runInContext(src + '\n;globalThis.__api = { radarrResolve, radarrAdd, radarrTest, plexResolve, normalizeRadarrUrl, radarrOriginPattern, plexSignInStart, plexSignInStatus, plexSignInCancel, plexSignOut, getPlexHeaders, radarrHasFile, plexLibraryMatch, getLibraryIndex, radarrLibraryMatch };', ctx);
+vm.runInContext(src + '\n;globalThis.__api = { radarrResolve, radarrAdd, radarrTest, plexResolve, normalizeRadarrUrl, radarrOriginPattern, plexSignInStart, plexSignInStatus, plexSignInCancel, plexSignOut, getPlexHeaders, radarrHasFile, plexLibraryMatch, getLibraryIndex, radarrLibraryMatch, plexIndexStatus, plexIndexRebuild };', ctx);
 const api = ctx.__api;
 
 // ---- tiny assert -----------------------------------------------------------
@@ -438,6 +438,37 @@ const radarrServer = http.createServer((req, res) => {
   pms.sectionCalls = 0;
   const both = await Promise.all([ask([['inception', 'Inception', '2010']]), ask([['severance', 'Severance', '2022']])]);
   check('concurrent tabs share one build', pms.sectionCalls === 1 && both[0].ok && both[1].ok, pms);
+
+  console.log('Plex index status (settings page)');
+  local = {};
+  session = {};
+  r = await api.plexIndexStatus();
+  check('signed out -> needs sign-in', r.status === 'no_token', r);
+
+  await chrome.storage.local.set({ plexToken: 'tok-123' });
+  await sleep(5);
+  r = await api.plexIndexStatus();
+  check('signed in, never indexed -> not built', r.status === 'none', r);
+
+  pms.sectionCalls = 0;
+  r = await api.plexIndexRebuild();
+  check('build on demand -> ready with counts', r.status === 'ready' && r.entries === 7 && r.servers === 1 && pms.sectionCalls === 1, r);
+  check('build publishes its state for the settings page', session.libraryIndexState &&
+    session.libraryIndexState.status === 'ready' && session.libraryIndexState.entries === 7, session.libraryIndexState);
+  r = await api.plexIndexStatus();
+  check('status reports the stored index', r.status === 'ready' && r.entries === 7 && r.stale === false, r);
+
+  pms.sectionCalls = 0;
+  r = await api.plexIndexRebuild();
+  check('rebuild re-reads the server', pms.sectionCalls === 1 && r.status === 'ready', r);
+
+  pms.sectionsStatus = 500;
+  r = await api.plexIndexRebuild();
+  check('nothing reachable -> unreachable, not "ready"', r.status === 'unreachable', r);
+  pms.sectionsStatus = 200;
+  await chrome.storage.local.set({ plexToken: 'tok-123' });
+  await sleep(5);
+  check('a token change clears the published state', !session.libraryIndexState, session);
 
   console.log('Radarr library index (poster + buttons)');
   const radarrAsk = (films) => api.radarrLibraryMatch(films.map(f => ({ key: f[0], title: f[1], year: f[2] })));

@@ -30,13 +30,13 @@
     <nav class="sidenav" aria-label="Settings sections">
       <div class="nav-group">
         <div class="nav-title">Destinations</div>
-        <a class="nav-link" href="#plex"><span class="dest-dot plex"></span>Plex</a>
-        <a class="nav-link" href="#radarr"><span class="dest-dot radarr"></span>Radarr</a>
+        <a class="nav-link" href="#plex"><span class="dest-dot" id="navDotPlex"></span>Plex</a>
+        <a class="nav-link" href="#radarr"><span class="dest-dot" id="navDotRadarr"></span>Radarr</a>
       </div>
       <div class="nav-group">
         <div class="nav-title">Sources</div>
-        <a class="nav-link" href="#letterboxd"><span class="dest-dot letterboxd"></span>Letterboxd</a>
-        <a class="nav-link" href="#imdb"><span class="dest-dot imdb"></span>IMDb</a>
+        <a class="nav-link" href="#letterboxd"><span class="dest-dot" id="navDotLetterboxd"></span>Letterboxd</a>
+        <a class="nav-link" href="#imdb"><span class="dest-dot" id="navDotImdb"></span>IMDb</a>
       </div>
       <div class="nav-group">
         <div class="nav-title">More</div>
@@ -56,7 +56,7 @@
       <!-- Plex -->
       <section class="card" id="plex">
         <div class="card-head">
-          <span class="dest-dot plex"></span>
+          <span class="dest-dot" id="dotPlex"></span>
           <h3>Plex</h3>
           <span class="pill muted">Always on</span>
         </div>
@@ -120,14 +120,31 @@
                 <option value="search_only">Universal search</option>
               </select>
             </div>
+            <div class="setting-row">
+              <div class="setting-text">
+                <div class="setting-title">Library index</div>
+                <div class="setting-desc" id="plexIndexDesc">Checking…</div>
+              </div>
+              <div class="index-actions">
+                <span class="conn-status" id="plexIndexStatus">Checking…</span>
+                <button id="plexIndexBtn" class="btn secondary">Build now</button>
+              </div>
+            </div>
           </div>
+          <div class="note" id="plexIndexNote"></div>
+          <p class="hint">
+            The index is a list of the titles in your Plex libraries. Poster badges on Letterboxd grids
+            match against it, so a whole page of posters costs one lookup instead of one each. It builds
+            itself the first time you open a grid, refreshes every 30 minutes, and is forgotten when the
+            browser closes.
+          </p>
         </div>
       </section>
 
       <!-- Radarr -->
       <section class="card" id="radarr">
         <div class="card-head">
-          <span class="dest-dot radarr"></span>
+          <span class="dest-dot" id="dotRadarr"></span>
           <h3>Radarr</h3>
           <label class="switch">
             <input type="checkbox" id="radarrEnabled" data-key="radarrEnabled" aria-label="Enable Radarr">
@@ -216,7 +233,7 @@
       <!-- Letterboxd -->
       <section class="card" id="letterboxd">
         <div class="card-head">
-          <span class="dest-dot letterboxd"></span>
+          <span class="dest-dot" id="dotLetterboxd"></span>
           <h3>Letterboxd</h3>
           <span class="pill muted">letterboxd.com</span>
         </div>
@@ -289,7 +306,7 @@
       <!-- IMDb -->
       <section class="card" id="imdb">
         <div class="card-head">
-          <span class="dest-dot imdb"></span>
+          <span class="dest-dot" id="dotImdb"></span>
           <h3>IMDb</h3>
           <span class="pill muted">imdb.com/title</span>
         </div>
@@ -341,7 +358,7 @@
           <div class="setting-list">
             <div class="setting-row">
               <div class="setting-text">
-                <div class="setting-title">Cached lookups</div>
+                <div class="setting-title">Cached film links</div>
                 <div class="setting-desc" id="cacheCount">Checking…</div>
               </div>
               <button id="clearCacheBtn" class="btn secondary">Clear cache</button>
