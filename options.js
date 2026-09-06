@@ -2,6 +2,10 @@
 // network calls (Plex, Radarr) run in the background service worker.
 
 document.addEventListener('DOMContentLoaded', () => {
+  // The worker's own URL handling, so what the user sees saved is exactly what
+  // gets called (shared.js is loaded before this file).
+  const { normalizeRadarrUrl, radarrOriginPattern } = ReelHop;
+
   const $ = (id) => document.getElementById(id);
 
   // Plex
@@ -329,28 +333,6 @@ document.addEventListener('DOMContentLoaded', () => {
   // ---------------------------------------------------------------------------
   // Radarr
   // ---------------------------------------------------------------------------
-
-  // Same normalization the background worker applies, so what the user sees
-  // saved is exactly what gets called.
-  function normalizeRadarrUrl(raw) {
-    let s = (raw || '').trim();
-    if (!s) return '';
-    // Anything with a non-http(s) scheme is a typo, not a Radarr address.
-    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(s) && !/^https?:\/\//i.test(s)) return '';
-    if (!/^https?:\/\//i.test(s)) s = 'http://' + s;
-    try {
-      const u = new URL(s);
-      if (u.protocol !== 'http:' && u.protocol !== 'https:') return '';
-      return (u.origin + u.pathname).replace(/\/+$/, '');
-    } catch (e) {
-      return '';
-    }
-  }
-
-  function radarrOriginPattern(url) {
-    const u = new URL(url);
-    return `${u.protocol}//${u.hostname}/*`;
-  }
 
   function hasRadarrAccess(url) {
     return chrome.permissions.contains({ origins: [radarrOriginPattern(url)] }).catch(() => false);

@@ -124,15 +124,24 @@ Each card carries a status dot, mirrored in the side nav. It reports state, not 
 
 ```
 manifest.json     MV3 manifest
+shared.js         Pure helpers used by all three sides (matching, wording, URLs)
 background.js     Service worker — all Plex and Radarr API calls
-content.js        Per-site DOM scraping, destination buttons, Letterboxd poster badges
+content.js        Per-site DOM scraping, destination buttons, Letterboxd poster marks
 content.css       Injected button styling
 options.html/js/css Settings page (opens in a tab; no popup)
 generate_icons.py Regenerates the icon PNGs
-test/             Node tests for the background worker (fake Plex + Radarr)
+test/             Node tests (fake Plex, Plex Media Server and Radarr)
+.github/workflows Runs the tests, parses every source file, checks the manifest
 ```
 
-Run the tests with `node test/background.test.js` (no dependencies).
+Run everything with `node test/run.js` (no dependencies), or a single file:
+
+| File | Covers |
+|---|---|
+| `test/shared.test.js` | `shared.js` on its own: text handling, library matching, URL normalization, every button label |
+| `test/background.test.js` | The worker against fake plex.tv, a fake Plex Media Server and a fake Radarr |
+
+**`shared.js` is where testable logic goes.** It is pure — no DOM, no `chrome`, no network — and all three sides load the same copy: the worker via `importScripts`, the content script as the first entry in `content_scripts[].js`, the settings page as a plain `<script>`. Putting a helper there instead of inlining it in `content.js` is what makes it reachable from a test, and it stops the same function existing in three files with three sets of bugs.
 
 Test on any Letterboxd film page (e.g. [The Dark Knight](https://letterboxd.com/film/the-dark-knight/)) or IMDb title page (e.g. [Inception](https://www.imdb.com/title/tt1375666/)). Poster badges show up on any Letterboxd poster grid, such as [popular films of the 2020s](https://letterboxd.com/films/popular/decade/2020s/) or your own watchlist.
 
@@ -152,7 +161,7 @@ Test on any Letterboxd film page (e.g. [The Dark Knight](https://letterboxd.com/
 2. Add the site's URL pattern to `content_scripts[0].matches` in [`manifest.json`](manifest.json).
 3. (Optional) Add site-specific styling to [`content.css`](content.css).
 
-Injected top-level nodes must carry the `reelhop-injected` class (so the engine can clean them up on navigation). Build the Plex button with `createPlexButton` and place the Radarr button with `syncRadarrButton`, so the engine can repaint both once resolution completes. The IMDb adapter is the minimal reference; the Letterboxd adapter shows multiple placements.
+Pure logic (title parsing, matching, wording) belongs in [`shared.js`](shared.js) with a test, not inline in the adapter. Injected top-level nodes must carry the `reelhop-injected` class (so the engine can clean them up on navigation). Build the Plex button with `createPlexButton` and place the Radarr button with `syncRadarrButton`, so the engine can repaint both once resolution completes. The IMDb adapter is the minimal reference; the Letterboxd adapter shows multiple placements.
 
 ### Adding a new destination
 
@@ -161,7 +170,7 @@ A destination is (a) a section in `background.js` exposing `<name>Resolve` / `<n
 ### Packaging for the Chrome Web Store
 
 ```bash
-zip -r reelhop.zip manifest.json background.js content.js content.css options.html options.js options.css icons
+zip -r reelhop.zip manifest.json shared.js background.js content.js content.css options.html options.js options.css icons
 ```
 
 Store listing reminders:

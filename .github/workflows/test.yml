@@ -1,0 +1,47 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # No dependencies to install: the suite is plain Node with fake HTTP
+      # servers standing in for plex.tv, a Plex Media Server and Radarr.
+      - name: Run tests
+        run: node test/run.js
+
+      # A syntax error in a file the tests don't load would otherwise ship.
+      - name: Check every source file parses
+        run: node --check shared.js && node --check background.js && node --check content.js && node --check options.js
+
+      - name: Check the manifest is valid JSON
+        run: node -e "JSON.parse(require('fs').readFileSync('manifest.json','utf8'))"
+
+      # The manifest lists every file the packaged extension loads; a rename
+      # that misses one breaks the extension without failing a test.
+      - name: Check the manifest's files exist
+        run: |
+          node -e "
+            const fs = require('fs');
+            const m = JSON.parse(fs.readFileSync('manifest.json', 'utf8'));
+            const files = [
+              m.background.service_worker,
+              m.options_ui.page,
+              ...m.content_scripts.flatMap(c => [...(c.js || []), ...(c.css || [])]),
+              ...Object.values(m.icons || {})
+            ];
+            const missing = files.filter(f => !fs.existsSync(f));
+            if (missing.length) { console.error('Missing:', missing); process.exit(1); }
+            console.log('All ' + files.length + ' manifest files present.');
+          "

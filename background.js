@@ -12,28 +12,20 @@
 // every enabled destination in parallel and paints whatever comes back, so a
 // slow or offline Radarr never delays the Plex link.
 
+importScripts('shared.js');
+
 const SERVER_LIST_TTL = 3600000; // 1 hour
 const REQUEST_TIMEOUT = 3000;
+const CACHE_PREFIX = 'cacheTarget_';
+const CACHE_TTL = 7 * 24 * 60 * 60 * 1000; // matches content.js
 
-function sanitizeText(str) {
-  if (!str) return '';
-  return str
-    .replace(/[\u00A0\u1680\u180e\u2000-\u200b\u202f\u205f\u3000\ufeff]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function normalize(str) {
-  return sanitizeText(str)
-    .toLowerCase()
-    .replace(/[^a-z0-9]/g, '');
-}
-
-function yearsClose(a, b) {
-  const ya = parseInt(a, 10);
-  const yb = parseInt(b, 10);
-  return !ya || !yb || Math.abs(ya - yb) <= 1;
-}
+// Pure helpers live in shared.js so the content script and settings page use
+// exactly the same matching and wording. See that file for what each does.
+const {
+  sanitizeText, normalize, yearsClose,
+  indexByTitle, matchLibraryEntry,
+  normalizeRadarrUrl, radarrOriginPattern, radarrHasFile
+} = ReelHop;
 
 function fetchWithTimeout(url, options = {}, timeout = REQUEST_TIMEOUT) {
   const controller = new AbortController();
@@ -384,19 +376,6 @@ async function fetchLibraryIndex(token) {
   return out;
 }
 
-function indexByTitle(entries) {
-  const byTitle = new Map();
-  const add = (key, entry) => {
-    const list = byTitle.get(key);
-    if (list) list.push(entry); else byTitle.set(key, [entry]);
-  };
-  for (const entry of entries) {
-    add(entry.t, entry);
-    if (entry.o) add(entry.o, entry);
-  }
-  return byTitle;
-}
-
 // The current index: in memory, else from session storage, else rebuilt.
 // Throws only on programming errors; an unreachable server yields an index
 // with reachable === 0, which the caller reports.
@@ -443,32 +422,6 @@ async function getLibraryIndex(token) {
     })().finally(() => { libraryIndexPromise = null; });
   }
   return libraryIndexPromise;
-}
-
-// Best library entry for one poster: exact normalized title (or original
-// title), year within ±1, preferring the exact year and a title over an
-// original-title hit. With no year to go on, only an unambiguous title counts.
-// Shared by the Plex and Radarr indexes; entries only need { t, o, y }.
-function matchLibraryEntry(index, film) {
-  const title = normalize(film.title || '');
-  if (!title) return null;
-  const candidates = index.byTitle.get(title);
-  if (!candidates || candidates.length === 0) return null;
-
-  const year = parseInt(film.year, 10) || 0;
-  if (!year) {
-    const years = new Set(candidates.map(c => c.y));
-    return years.size === 1 ? candidates[0] : null;
-  }
-
-  let best = null;
-  let bestScore = -1;
-  for (const c of candidates) {
-    if (!yearsClose(c.y, year)) continue;
-    const score = (c.y === year ? 4 : 0) + (c.t === title ? 2 : 1);
-    if (score > bestScore) { best = c; bestScore = score; }
-  }
-  return best;
 }
 
 // films: [{ key, title, year }] -> { ok, matches: { key: { type: 'server', url, serverName, ratingKey, machineIdentifier } } }
@@ -801,8 +754,29 @@ chrome.storage.onChanged.addListener(async (changes, area) => {
   if (keys.length > 0) await chrome.storage.local.remove(keys);
 });
 
+// Expired film links were skipped on read but never removed, so the store
+// grew for as long as the user kept browsing. Sweep them when the worker
+// wakes; it is the one place that runs without a page being open.
+async function sweepExpiredCache() {
+  try {
+    const all = await chrome.storage.local.get(null);
+    const now = Date.now();
+    const stale = Object.keys(all).filter((k) => {
+      if (!k.startsWith(CACHE_PREFIX)) return false;
+      const entry = all[k];
+      return !entry || !entry.timestamp || now - entry.timestamp >= CACHE_TTL;
+    });
+    if (stale.length > 0) await chrome.storage.local.remove(stale);
+    return stale.length;
+  } catch (e) {
+    console.warn('[ReelHop] Could not sweep the film-link cache:', e);
+    return 0;
+  }
+}
+
 // Resume a sign-in that was mid-flight when the worker was suspended.
 pollPlexPin();
+sweepExpiredCache();
 
 // ===========================================================================
 // Radarr
@@ -820,30 +794,6 @@ class RadarrHttpError extends Error {
     super(`Radarr returned HTTP ${status}`);
     this.status = status;
   }
-}
-
-// Turn whatever the user typed into "http(s)://host[:port][/urlbase]" with no
-// trailing slash. Returns '' when it can't be a valid http(s) URL.
-function normalizeRadarrUrl(raw) {
-  let s = (raw || '').trim();
-  if (!s) return '';
-  // Anything with a non-http(s) scheme is a typo, not a Radarr address.
-  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(s) && !/^https?:\/\//i.test(s)) return '';
-  if (!/^https?:\/\//i.test(s)) s = 'http://' + s;
-  try {
-    const u = new URL(s);
-    if (u.protocol !== 'http:' && u.protocol !== 'https:') return '';
-    return (u.origin + u.pathname).replace(/\/+$/, '');
-  } catch (e) {
-    return '';
-  }
-}
-
-// Match pattern for the Radarr host. Chrome match patterns cover every port
-// unless one is written explicitly, so this works for :7878 and friends.
-function radarrOriginPattern(baseUrl) {
-  const u = new URL(baseUrl);
-  return `${u.protocol}//${u.hostname}/*`;
 }
 
 async function getRadarrConfig() {
@@ -892,16 +842,6 @@ function radarrAddPageUrl(cfg, term) {
 
 function radarrSearchTerm(movie) {
   return sanitizeText(movie.year ? `${movie.title} ${movie.year}` : movie.title);
-}
-
-// Radarr v5 stopped filling in MovieResource.hasFile (it is a nullable
-// "compatibility" field that ToResource never assigns), so a downloaded movie
-// arrives with hasFile null and movieFileId > 0. Trust any of the signals.
-function radarrHasFile(movie) {
-  if (!movie) return false;
-  if (movie.hasFile === true) return true;
-  if (typeof movie.movieFileId === 'number' && movie.movieFileId > 0) return true;
-  return !!(movie.movieFile && movie.movieFile.id > 0);
 }
 
 // Every Radarr answer has the same shape so the content script can paint it.

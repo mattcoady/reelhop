@@ -19,6 +19,13 @@
 (function () {
   'use strict';
 
+  // Pure helpers shared with the worker and the settings page (shared.js runs
+  // first in this same isolated world; see manifest content_scripts).
+  const {
+    sanitizeText, parseTitleYear, badgeLabelFor, radarrView,
+    posterAddView, posterSizeClass, filterHides, filterTally
+  } = ReelHop;
+
   const CACHE_PREFIX = 'cacheTarget_';
   const CACHE_TTL = 7 * 24 * 60 * 60 * 1000; // 7 days
   const INJECTED_CLASS = 'reelhop-injected'; // marks every top-level node we add
@@ -45,14 +52,6 @@
   // ---------------------------------------------------------------------------
   // Shared helpers (used by every adapter)
   // ---------------------------------------------------------------------------
-
-  function sanitizeText(str) {
-    if (!str) return '';
-    return str
-      .replace(/[\u00A0\u1680\u180e\u2000-\u200b\u202f\u205f\u3000\ufeff]/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
-  }
 
   function createSvgIcon(pathData, fill) {
     const svgNS = 'http://www.w3.org/2000/svg';
@@ -84,13 +83,6 @@
     const cleanYear = sanitizeText(year);
     const q = cleanYear ? `${cleanTitle} ${cleanYear}` : cleanTitle;
     return `https://app.plex.tv/desktop/#!/search?query=${encodeURIComponent(q)}`;
-  }
-
-  function badgeLabelFor(type) {
-    if (type === 'checking') return 'Checking…';
-    if (type === 'server') return 'On Server';
-    if (type === 'discover') return 'Discover';
-    return 'Search';
   }
 
   function applyLinkTarget(el, settings) {
@@ -130,39 +122,6 @@
     badge.textContent = badgeLabelFor(type);
     link.appendChild(badge);
     return link;
-  }
-
-  // What a Radarr button should say for a given state. `tone` picks the chip
-  // color; `isAction` means a plain click does something other than navigate.
-  function radarrView(state) {
-    const s = state || { status: 'checking' };
-    switch (s.status) {
-      case 'checking':
-        return { label: 'Radarr', badge: 'Checking…', tone: 'checking', title: 'Checking Radarr…' };
-      case 'adding':
-        return { label: 'Add to Radarr', badge: 'Adding…', tone: 'checking', title: 'Adding to Radarr…' };
-      case 'in_library': {
-        const badge = s.justAdded ? 'Added' : s.hasFile ? 'Downloaded' : s.monitored ? 'Wanted' : 'Unmonitored';
-        const tone = (s.justAdded || s.hasFile) ? 'ok' : s.monitored ? 'warn' : 'neutral';
-        return { label: 'Open in Radarr', badge, tone, title: `In your Radarr library (${badge.toLowerCase()})` };
-      }
-      case 'missing':
-        return s.canAdd
-          ? { label: 'Add to Radarr', badge: 'Add', tone: 'action', title: 'Add this movie to Radarr with your default profile and root folder' }
-          : { label: 'Add in Radarr', badge: 'Not added', tone: 'neutral', title: 'Open Radarr to add this movie' };
-      case 'not_found':
-        return { label: 'Search in Radarr', badge: 'Not found', tone: 'neutral', title: 'Radarr could not match this title; opens a Radarr search' };
-      case 'unauthorized':
-        return { label: 'Radarr', badge: 'Bad API key', tone: 'err', title: 'Radarr rejected the API key. Check ReelHop settings.' };
-      case 'permission':
-        return { label: 'Radarr', badge: 'Needs access', tone: 'err', title: 'Open ReelHop settings and press Save to grant access to your Radarr URL.' };
-      case 'unconfigured':
-        return { label: 'Radarr', badge: 'Setup', tone: 'err', title: s.message || 'Finish Radarr setup in ReelHop settings.' };
-      case 'error':
-        return { label: 'Radarr', badge: 'Failed', tone: 'err', title: s.message || 'Radarr returned an error' };
-      default:
-        return { label: 'Radarr', badge: 'Unreachable', tone: 'err', title: s.message ? `Radarr: ${s.message}` : 'Could not reach Radarr' };
-    }
   }
 
   function paintRadarrButton(a, state) {
@@ -626,6 +585,7 @@
   const posterPending = new Set(); // slugs queued or in flight
   let posterQueue = new Map();     // slug -> { title, year } waiting to be sent
   let radarrCanAdd = false;        // profile + root folder are set, so "+" adds in place
+  let radarrPosterProblem = '';    // why the "+" buttons are missing, if they are
   let posterFlushTimer = null;
   let posterScanTimer = null;
 
@@ -646,19 +606,9 @@
   }
 
   // "Title (Year)" from the component's data, or the image alt as a fallback.
-  // The lazy group means a title that itself ends in a year still parses.
   function posterFilm(el) {
-    const raw = el.dataset.itemName || el.dataset.itemFullDisplayName ||
-                (el.querySelector('img') || {}).alt || '';
-    const name = sanitizeText(raw).replace(/^Poster for\s+/i, '');
-    const m = name.match(/^(.*?)\s*\((\d{4})\)$/);
-    return m ? { title: m[1], year: m[2] } : { title: name, year: '' };
-  }
-
-  function posterSizeClass(width) {
-    if (width < 100) return '-sm';
-    if (width > 160) return '-lg';
-    return '';
+    return parseTitleYear(el.dataset.itemName || el.dataset.itemFullDisplayName ||
+                          (el.querySelector('img') || {}).alt || '');
   }
 
   // The stack of marks in the poster's corner, created on first use.
@@ -678,21 +628,6 @@
   function dropMarksIfEmpty(el) {
     const marks = posterMarks(el, false);
     if (marks && !marks.firstChild) marks.remove();
-  }
-
-  // What the Radarr "+" says in each state. Only films that aren't in Radarr
-  // get one, so the resting state is always the offer to add.
-  function posterAddView(state) {
-    switch (state && state.status) {
-      case 'adding': return { icon: '…', label: 'Adding to Radarr…', tone: 'busy' };
-      case 'added': return { icon: '✓', label: 'Added to Radarr', tone: 'ok' };
-      case 'error': return { icon: '!', label: state.message || 'Radarr could not add this', tone: 'err' };
-      default: return {
-        icon: '+',
-        label: radarrCanAdd ? 'Add to Radarr' : 'Open this in Radarr to add it',
-        tone: 'action'
-      };
-    }
   }
 
   // Add, update or remove one poster's marks. Letterboxd mutates these grids
@@ -733,7 +668,7 @@
     if (!add) {
       if (plus) plus.remove();
     } else {
-      const v = posterAddView(add);
+      const v = posterAddView(add, radarrCanAdd);
       if (!plus) {
         plus = document.createElement('a');
         plus.className = POSTER_ADD_CLASS;
@@ -791,16 +726,9 @@
   }
 
   // What the grid currently holds, split by what we know about each poster.
-  function filterTally(grid) {
-    const tally = { total: 0, available: 0, unavailable: 0, pending: 0 };
-    for (const el of grid.querySelectorAll(POSTER_SELECTOR)) {
-      const slug = el.dataset.itemSlug;
-      tally.total++;
-      if (!posterKnown.has(slug)) tally.pending++;
-      else if (posterResults.get(slug)) tally.available++;
-      else tally.unavailable++;
-    }
-    return tally;
+  function gridTally(grid) {
+    const slugs = [...grid.querySelectorAll(POSTER_SELECTOR)].map(el => el.dataset.itemSlug);
+    return filterTally(slugs, (slug) => posterResults.get(slug), (slug) => posterKnown.has(slug));
   }
 
   function setPosterFilter(mode) {
@@ -876,7 +804,7 @@
     }
 
     const mode = settings.posterFilter;
-    const tally = filterTally(grid);
+    const tally = gridTally(grid);
     const counts = { all: tally.total, available: tally.available, unavailable: tally.unavailable };
     for (const btn of bar.querySelectorAll('.reelhop-filter-btn')) {
       const active = btn.dataset.mode === mode;
@@ -896,6 +824,7 @@
     const status = bar.querySelector('.reelhop-filter-status');
     let note = '';
     if (tally.pending > 0) note = 'Checking Plex…';
+    else if (radarrPosterProblem) note = radarrPosterProblem;
     else if (mode === 'available' && tally.available === 0) note = 'Nothing on this page is on Plex.';
     else if (mode === 'unavailable' && tally.unavailable === 0) note = 'Everything on this page is on Plex.';
     if (status.textContent !== note) status.textContent = note;
@@ -911,17 +840,15 @@
     const mode = grid && settings.showPosterFilter ? settings.posterFilter : 'all';
     for (const el of document.querySelectorAll(POSTER_SELECTOR)) {
       const item = el.closest('li') || el;
-      let hide = false;
-      if (mode !== 'all' && grid && grid.contains(el)) {
-        const match = posterResults.get(el.dataset.itemSlug);
-        if (match !== undefined) hide = mode === 'available' ? !match : !!match;
-      }
+      const inGrid = grid && grid.contains(el);
+      const hide = inGrid && filterHides(mode, posterResults.get(el.dataset.itemSlug));
       item.classList.toggle(FILTER_HIDDEN_CLASS, hide);
     }
   }
 
   // Forget everything and strip the marks; the next scan starts over.
   function resetPosters() {
+    radarrPosterProblem = '';
     posterResults.clear();
     radarrPoster.clear();
     posterKnown.clear();
@@ -996,7 +923,10 @@
       wants.radarr ? ask('radarrLibraryMatch') : Promise.resolve(null)
     ]);
 
-    if (radarrRes && radarrRes.ok) radarrCanAdd = radarrRes.canAdd === true;
+    if (wants.radarr) {
+      radarrCanAdd = !!(radarrRes && radarrRes.ok && radarrRes.canAdd === true);
+      radarrPosterProblem = radarrRes && radarrRes.ok ? '' : radarrPosterMessage(radarrRes);
+    }
 
     for (const key of keys) {
       if (wants.plex) {
@@ -1006,8 +936,9 @@
         posterResults.set(key, match);
       }
       if (wants.radarr) {
-        // A Radarr that can't be reached stays quiet rather than stamping an
-        // error on every poster; the film-page button reports the real problem.
+        // A Radarr that can't be reached stays quiet on the posters themselves
+        // rather than stamping an error on every one; the filter bar says why
+        // once, and the film-page button reports the detail.
         if (!radarrRes || !radarrRes.ok) radarrPoster.set(key, null);
         else if (radarrRes.matches[key]) radarrPoster.set(key, null); // already in Radarr
         else radarrPoster.set(key, { status: 'add', url: radarrCanAdd ? null : addPageUrl(radarrRes, batch.get(key)) });
@@ -1016,6 +947,19 @@
       posterKnown.add(key);
     }
     scanPosters();
+  }
+
+  // Why no "+" buttons appeared. Said once in the filter bar rather than
+  // stamped on every poster, and only for problems the user can act on.
+  function radarrPosterMessage(res) {
+    switch (res && res.reason) {
+      case 'unauthorized': return 'Radarr rejected its API key.';
+      case 'permission': return 'Radarr needs browser access.';
+      case 'unconfigured': return 'Radarr needs an API key.';
+      case 'disabled': return '';
+      case undefined: return 'Radarr did not answer.';
+      default: return 'Radarr could not be reached.';
+    }
   }
 
   // Where the "+" points when it can't add in place (no profile / root folder).

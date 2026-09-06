@@ -71,9 +71,17 @@ const routedFetch = (url, opts) => {
   return fetch(u, opts);
 };
 
-const ctx = { chrome, fetch: routedFetch, AbortController, setTimeout, clearTimeout, console, crypto, URL, URLSearchParams, encodeURIComponent, JSON, Math, Promise, Date };
+const ctx = { chrome, fetch: routedFetch, AbortController, setTimeout, clearTimeout, console, crypto, URL, URLSearchParams, encodeURIComponent, JSON, Math, Promise, Date, Set, Map };
+// The worker is a classic service worker, so shared.js arrives via
+// importScripts. Do the same here rather than pre-loading it, so a broken
+// import shows up as a test failure.
+ctx.importScripts = (...files) => {
+  for (const f of files) {
+    vm.runInContext(fs.readFileSync(path.join(__dirname, '..', f), 'utf8'), ctx, { filename: f });
+  }
+};
 vm.createContext(ctx);
-vm.runInContext(src + '\n;globalThis.__api = { radarrResolve, radarrAdd, radarrTest, plexResolve, normalizeRadarrUrl, radarrOriginPattern, plexSignInStart, plexSignInStatus, plexSignInCancel, plexSignOut, getPlexHeaders, radarrHasFile, plexLibraryMatch, getLibraryIndex, radarrLibraryMatch, plexIndexStatus, plexIndexRebuild };', ctx);
+vm.runInContext(src + '\n;globalThis.__api = { radarrResolve, radarrAdd, radarrTest, plexResolve, normalizeRadarrUrl, radarrOriginPattern, plexSignInStart, plexSignInStatus, plexSignInCancel, plexSignOut, getPlexHeaders, radarrHasFile, plexLibraryMatch, getLibraryIndex, radarrLibraryMatch, plexIndexStatus, plexIndexRebuild, sweepExpiredCache };', ctx);
 const api = ctx.__api;
 
 // ---- tiny assert -----------------------------------------------------------
@@ -527,6 +535,22 @@ const radarrServer = http.createServer((req, res) => {
   radarr.listCalls = 0;
   r = await radarrAsk([['inception', 'Inception', '2010']]);
   check('the rebuilt index sees the new movie', radarr.listCalls === 1 && !!r.matches.inception, r.matches);
+
+  console.log('film-link cache upkeep');
+  const day = 24 * 60 * 60 * 1000;
+  local = {
+    cacheTarget_letterboxd_fresh: { url: 'a', timestamp: Date.now() - day },
+    cacheTarget_letterboxd_old: { url: 'b', timestamp: Date.now() - 8 * day },
+    cacheTarget_imdb_ancient: { url: 'c', timestamp: Date.now() - 400 * day },
+    cacheTarget_letterboxd_broken: { url: 'd' },
+    plexToken: 'tok-123'
+  };
+  const swept = await api.sweepExpiredCache();
+  check('sweep removes only the expired entries', swept === 3 &&
+    'cacheTarget_letterboxd_fresh' in local && !('cacheTarget_letterboxd_old' in local) &&
+    !('cacheTarget_imdb_ancient' in local) && !('cacheTarget_letterboxd_broken' in local), Object.keys(local));
+  check('sweep leaves settings alone', local.plexToken === 'tok-123', local);
+  check('sweep on an empty store is a no-op', await api.sweepExpiredCache() === 0);
 
   console.log('settings page');
   const route = (msg) => new Promise((resolve) => listeners.message[0](msg, {}, resolve));
