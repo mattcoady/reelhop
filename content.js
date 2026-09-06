@@ -13,8 +13,9 @@
 //
 // A third, Letterboxd-only module (Poster badges) marks posters on grids,
 // lists and the watchlist with a Plex chip when the title is on the user's
-// server. It batches whole pages into one message, so it costs nothing per
-// poster.
+// server, and offers a bar above the grid for filtering it down to what is
+// (or isn't) on Plex. It batches whole pages into one message, so it costs
+// nothing per poster.
 (function () {
   'use strict';
 
@@ -39,6 +40,7 @@
   // library" has to go stale the moment the user clicks Add.
   const radarrMemo = new Map();
   const RADARR_RECHECK_MS = 30 * 1000; // re-ask when a tab returns to view after this long
+  const FILTER_MODES = ['all', 'available', 'unavailable'];
 
   // ---------------------------------------------------------------------------
   // Shared helpers (used by every adapter)
@@ -535,6 +537,8 @@
         'showDetailsLink',
         'showImdbButton',
         'showPosterBadges',
+        'showPosterFilter',
+        'posterFilter',
         'radarrEnabled',
         'radarrUrl'
       ], (items) => {
@@ -546,6 +550,8 @@
           showDetailsLink: items.showDetailsLink !== false,
           showImdbButton: items.showImdbButton !== false,
           showPosterBadges: items.showPosterBadges !== false,
+          showPosterFilter: items.showPosterFilter !== false,
+          posterFilter: FILTER_MODES.includes(items.posterFilter) ? items.posterFilter : 'all',
           radarrEnabled: items.radarrEnabled === true,
           radarrUrl: (items.radarrUrl || '').trim()
         };
@@ -600,7 +606,13 @@
   const POSTER_BADGE_CLASS = 'reelhop-poster-badge';
   const POSTER_MIN_WIDTH = 60;   // thumbnails are too small for a chip
   const POSTER_MAX_WIDTH = 400;  // the film page's own poster already has buttons
-  const POSTER_KEYS = ['plexToken', 'showPosterBadges', 'openInNewTab']; // settings that change the chips
+  // Settings that invalidate what we know (re-ask Plex) vs. ones that only
+  // change how it is drawn (repaint from memory).
+  const POSTER_RESET_KEYS = ['plexToken', 'showPosterBadges'];
+  const POSTER_REFRESH_KEYS = ['openInNewTab', 'showPosterFilter', 'posterFilter'];
+  const FILTER_BAR_ID = 'reelhop-poster-filter';
+  const FILTER_HIDDEN_CLASS = 'reelhop-filtered-out';
+  const FILTER_MIN_POSTERS = 8; // below this a grid is a preview strip, not a page of films
   const posterResults = new Map(); // slug -> match | null
   const posterPending = new Set(); // slugs with a lookup in flight
   let posterQueue = new Map();     // slug -> { title, year } waiting to be sent
@@ -666,6 +678,156 @@
     el.dataset.reelhopPoster = 'server';
   }
 
+  // ---- Availability filter -------------------------------------------------
+  // One bar above the page's main poster grid: All / On Plex / Not on Plex.
+  // The choice is stored, so it survives paging through a list.
+
+  // The grid this page is about: the one holding the most film posters. A
+  // handful of posters is a preview strip (a list card, "similar films"), not
+  // something worth filtering.
+  function mainPosterGrid() {
+    if (!isLetterboxd()) return null;
+    const adapter = getActiveAdapter();
+    if (adapter && adapter.id === 'letterboxd') return null; // film pages aren't browsing
+    let best = null;
+    let bestCount = 0;
+    for (const ul of document.querySelectorAll('ul.poster-list, ul.grid')) {
+      const n = ul.querySelectorAll(POSTER_SELECTOR).length;
+      if (n > bestCount) { best = ul; bestCount = n; }
+    }
+    return bestCount >= FILTER_MIN_POSTERS ? best : null;
+  }
+
+  // What the grid currently holds, split by what we know about each poster.
+  function filterTally(grid) {
+    const tally = { total: 0, available: 0, unavailable: 0, pending: 0 };
+    for (const el of grid.querySelectorAll(POSTER_SELECTOR)) {
+      const slug = el.dataset.itemSlug;
+      tally.total++;
+      if (!posterResults.has(slug)) tally.pending++;
+      else if (posterResults.get(slug)) tally.available++;
+      else tally.unavailable++;
+    }
+    return tally;
+  }
+
+  function setPosterFilter(mode) {
+    if (!FILTER_MODES.includes(mode)) return;
+    if (lastSettings) lastSettings.posterFilter = mode;
+    chrome.storage.local.set({ posterFilter: mode });
+    scanPosters();
+  }
+
+  function createFilterBar() {
+    const bar = document.createElement('div');
+    bar.id = FILTER_BAR_ID;
+    bar.className = `reelhop-poster-filter ${INJECTED_CLASS}`;
+    bar.appendChild(createPlexIcon());
+
+    const group = document.createElement('div');
+    group.className = 'reelhop-filter-group';
+    group.setAttribute('role', 'group');
+    group.setAttribute('aria-label', 'Filter this grid by what is on Plex');
+    for (const [mode, label] of [['all', 'All'], ['available', 'On Plex'], ['unavailable', 'Not on Plex']]) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'reelhop-filter-btn';
+      btn.dataset.mode = mode;
+      const text = document.createElement('span');
+      text.textContent = label;
+      btn.appendChild(text);
+      const count = document.createElement('span');
+      count.className = 'reelhop-filter-count';
+      btn.appendChild(count);
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setPosterFilter(mode);
+      });
+      group.appendChild(btn);
+    }
+    bar.appendChild(group);
+
+    const status = document.createElement('span');
+    status.className = 'reelhop-filter-status';
+    bar.appendChild(status);
+
+    // Only shown when the current filter leaves the grid empty, so there is
+    // always a way back from a blank page.
+    const reset = document.createElement('button');
+    reset.type = 'button';
+    reset.className = 'reelhop-filter-reset';
+    reset.textContent = 'Show all';
+    reset.hidden = true;
+    reset.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setPosterFilter('all');
+    });
+    bar.appendChild(reset);
+    return bar;
+  }
+
+  // Place (or remove) the bar and bring its labels up to date.
+  function syncFilterBar(settings, grid) {
+    let bar = document.getElementById(FILTER_BAR_ID);
+    if (!grid || !settings.showPosterFilter) {
+      if (bar) bar.remove();
+      return;
+    }
+    if (!bar) {
+      bar = createFilterBar();
+      // Sit above the whole grid block, which is wrapped differently on browse
+      // pages than on lists and watchlists.
+      const anchor = grid.closest('.poster-grid, .productions-browser-list') || grid;
+      anchor.parentNode.insertBefore(bar, anchor);
+    }
+
+    const mode = settings.posterFilter;
+    const tally = filterTally(grid);
+    const counts = { all: tally.total, available: tally.available, unavailable: tally.unavailable };
+    for (const btn of bar.querySelectorAll('.reelhop-filter-btn')) {
+      const active = btn.dataset.mode === mode;
+      btn.classList.toggle('is-active', active);
+      btn.setAttribute('aria-pressed', String(active));
+      const count = btn.querySelector('.reelhop-filter-count');
+      // Counts are only meaningful once every poster has an answer.
+      const text = tally.pending > 0 && btn.dataset.mode !== 'all' ? '' : String(counts[btn.dataset.mode]);
+      if (count.textContent !== text) count.textContent = text;
+    }
+
+    const shown = mode === 'available' ? tally.available
+      : mode === 'unavailable' ? tally.unavailable
+      : tally.total;
+    const empty = tally.pending === 0 && tally.total > 0 && shown === 0;
+
+    const status = bar.querySelector('.reelhop-filter-status');
+    let note = '';
+    if (tally.pending > 0) note = 'Checking Plex…';
+    else if (mode === 'available' && tally.available === 0) note = 'Nothing on this page is on Plex.';
+    else if (mode === 'unavailable' && tally.unavailable === 0) note = 'Everything on this page is on Plex.';
+    if (status.textContent !== note) status.textContent = note;
+    status.classList.toggle('is-empty', empty);
+
+    const reset = bar.querySelector('.reelhop-filter-reset');
+    if (reset.hidden !== !empty) reset.hidden = !empty;
+  }
+
+  // Hide the grid items the current mode excludes. A poster we haven't heard
+  // back about yet stays visible: better a late change than a wrong one.
+  function applyPosterFilter(settings, grid) {
+    const mode = grid && settings.showPosterFilter ? settings.posterFilter : 'all';
+    for (const el of document.querySelectorAll(POSTER_SELECTOR)) {
+      const item = el.closest('li') || el;
+      let hide = false;
+      if (mode !== 'all' && grid && grid.contains(el)) {
+        const match = posterResults.get(el.dataset.itemSlug);
+        if (match !== undefined) hide = mode === 'available' ? !match : !!match;
+      }
+      item.classList.toggle(FILTER_HIDDEN_CLASS, hide);
+    }
+  }
+
   // Forget everything and strip the chips; the next scan starts over.
   function resetPosters() {
     posterResults.clear();
@@ -673,6 +835,8 @@
     posterQueue = new Map();
     document.querySelectorAll(`.${POSTER_BADGE_CLASS}`).forEach((el) => el.remove());
     document.querySelectorAll('[data-reelhop-poster]').forEach((el) => { delete el.dataset.reelhopPoster; });
+    document.getElementById(FILTER_BAR_ID)?.remove();
+    document.querySelectorAll(`.${FILTER_HIDDEN_CLASS}`).forEach((el) => el.classList.remove(FILTER_HIDDEN_CLASS));
   }
 
   // Paint known posters, queue unknown ones. Cheap enough to run after every
@@ -705,6 +869,10 @@
     if (posterQueue.size > 0 && !posterFlushTimer) {
       posterFlushTimer = setTimeout(flushPosterQueue, 150);
     }
+
+    const grid = mainPosterGrid();
+    syncFilterBar(settings, grid);
+    applyPosterFilter(settings, grid);
   }
 
   async function flushPosterQueue() {
@@ -1019,8 +1187,10 @@
         radarrState = null;
       }
       // Token or chip settings changed: the chips describe a different world.
-      if (POSTER_KEYS.some(k => k in changes)) {
+      if (POSTER_RESET_KEYS.some(k => k in changes)) {
         getSettings().then(() => { resetPosters(); scanPosters(); });
+      } else if (POSTER_REFRESH_KEYS.some(k => k in changes)) {
+        getSettings().then(() => scanPosters());
       }
       scheduleInject();
     });

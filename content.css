@@ -361,3 +361,113 @@
   width: 16px;
   height: 16px;
 }
+
+/* ---------- Letterboxd: availability filter bar above poster grids ---------- */
+.reelhop-poster-filter {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 0 0 14px;
+  padding: 8px 12px;
+  background: linear-gradient(135deg, #1f252b 0%, #151a1e 100%);
+  border: 1px solid #303840;
+  border-radius: 4px;
+  color: #99aabb;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.reelhop-poster-filter > svg {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
+.reelhop-filter-group {
+  display: inline-flex;
+  border: 1px solid #34404a;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.reelhop-filter-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 6px 11px;
+  background: transparent;
+  border: 0;
+  border-right: 1px solid #34404a;
+  color: #99aabb;
+  font: inherit;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  cursor: pointer;
+  transition: background-color 0.15s ease-in-out, color 0.15s ease-in-out;
+}
+
+.reelhop-filter-btn:last-child {
+  border-right: 0;
+}
+
+.reelhop-filter-btn:hover {
+  background: rgba(229, 160, 13, 0.12);
+  color: #fff;
+}
+
+.reelhop-filter-btn:focus-visible {
+  outline: 2px solid #e5a00d;
+  outline-offset: -2px;
+}
+
+.reelhop-filter-btn.is-active {
+  background: rgba(229, 160, 13, 0.18);
+  color: #f0c064;
+}
+
+.reelhop-filter-count {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.65;
+}
+
+.reelhop-filter-count:empty {
+  display: none;
+}
+
+.reelhop-filter-status {
+  margin-left: auto;
+  color: #7a8b9c;
+  font-size: 11px;
+}
+
+.reelhop-filter-status:empty {
+  display: none;
+}
+
+/* Grid items the filter excludes. */
+.reelhop-filtered-out {
+  display: none !important;
+}
+
+.reelhop-filter-status.is-empty {
+  color: #e5a00d;
+}
+
+.reelhop-filter-reset {
+  margin: 0;
+  padding: 6px 11px;
+  background: rgba(229, 160, 13, 0.18);
+  border: 1px solid rgba(229, 160, 13, 0.45);
+  border-radius: 4px;
+  color: #f0c064;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.reelhop-filter-reset:hover {
+  background: rgba(229, 160, 13, 0.3);
+  color: #fff;
+}
