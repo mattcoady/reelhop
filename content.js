@@ -33,6 +33,7 @@
   // Radarr answers are memoized only for the page's lifetime: "not in your
   // library" has to go stale the moment the user clicks Add.
   const radarrMemo = new Map();
+  const RADARR_RECHECK_MS = 30 * 1000; // re-ask when a tab returns to view after this long
 
   // ---------------------------------------------------------------------------
   // Shared helpers (used by every adapter)
@@ -698,7 +699,7 @@
         } else {
           radarrState = radarrStateFrom(result, filmToken, settings);
           if (['in_library', 'missing', 'not_found'].includes(radarrState.status)) {
-            radarrMemo.set(filmToken, radarrState);
+            radarrMemo.set(filmToken, { ...radarrState, at: Date.now() });
           }
         }
       }
@@ -735,7 +736,7 @@
 
     radarrState = radarrStateFrom(result, filmToken, lastSettings);
     if (radarrState.status === 'in_library') {
-      radarrMemo.set(filmToken, radarrState);
+      radarrMemo.set(filmToken, { ...radarrState, at: Date.now() });
     } else {
       radarrMemo.delete(filmToken);
     }
@@ -844,6 +845,18 @@
         radarrState = null;
       }
       scheduleInject();
+    });
+    // A tab left open while Radarr finishes a download would otherwise keep
+    // saying "Wanted". When the tab comes back into view and the answer is
+    // old, ask again; the button repaints only once Radarr replies.
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState !== 'visible' || isResolvingRadarr || !lastSettings) return;
+      const token = currentFilmToken();
+      const memo = radarrMemo.get(token);
+      if (!memo || Date.now() - (memo.at || 0) < RADARR_RECHECK_MS) return;
+      const adapter = getActiveAdapter();
+      const movie = adapter && adapter.isFilmPage() ? adapter.extract() : null;
+      if (movie && radarrWanted(lastSettings, movie)) resolveRadarr(movie, token, lastSettings);
     });
     window.addEventListener('popstate', handleUrlChange);
     document.addEventListener('turbo:load', handleUrlChange);

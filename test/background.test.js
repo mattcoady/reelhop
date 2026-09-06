@@ -73,7 +73,7 @@ const routedFetch = (url, opts) => {
 
 const ctx = { chrome, fetch: routedFetch, AbortController, setTimeout, clearTimeout, console, crypto, URL, URLSearchParams, encodeURIComponent, JSON, Math, Promise, Date };
 vm.createContext(ctx);
-vm.runInContext(src + '\n;globalThis.__api = { radarrResolve, radarrAdd, radarrTest, plexResolve, normalizeRadarrUrl, radarrOriginPattern, plexSignInStart, plexSignInStatus, plexSignInCancel, plexSignOut, getPlexHeaders };', ctx);
+vm.runInContext(src + '\n;globalThis.__api = { radarrResolve, radarrAdd, radarrTest, plexResolve, normalizeRadarrUrl, radarrOriginPattern, plexSignInStart, plexSignInStatus, plexSignInCancel, plexSignOut, getPlexHeaders, radarrHasFile };', ctx);
 const api = ctx.__api;
 
 // ---- tiny assert -----------------------------------------------------------
@@ -122,7 +122,8 @@ const catalog = {
   'tt1375666': { tmdbId: 27205, title: 'Inception', year: 2010, titleSlug: '27205', imdbId: 'tt1375666', images: [{ coverType: 'poster', remoteUrl: 'x' }] },
   'tt0111161': { tmdbId: 278, title: 'The Shawshank Redemption', year: 1994, titleSlug: '278', imdbId: 'tt0111161' }
 };
-const library = new Map([[278, { id: 42, ...catalog['tt0111161'], hasFile: true, monitored: true }]]);
+// Shaped like Radarr v5: no hasFile, the file shows up as movieFileId/movieFile.
+const library = new Map([[278, { id: 42, ...catalog['tt0111161'], movieFileId: 12, movieFile: { id: 12, relativePath: 'The Shawshank Redemption (1994).mkv' }, monitored: true }]]);
 let lastPost = null;
 let appName = 'Radarr';
 let postCount = 0;
@@ -153,7 +154,7 @@ const radarrServer = http.createServer((req, res) => {
       postCount++;
       const m = JSON.parse(body); lastPost = m;
       if (library.has(m.tmdbId)) return send(400, [{ errorMessage: 'This movie has already been added' }]);
-      const added = { ...m, id: 100 + library.size, hasFile: false };
+      const added = { ...m, id: 100 + library.size, movieFileId: 0, movieFile: null };
       library.set(m.tmdbId, added);
       send(201, added);
     });
@@ -245,7 +246,12 @@ const radarrServer = http.createServer((req, res) => {
   cfg();
   r = await api.radarrResolve(shawshank);
   check('in library -> in_library', r.status === 'in_library', r);
-  check('in library -> hasFile/monitored', r.hasFile === true && r.monitored === true, r);
+  check('in library -> hasFile (from movieFileId) / monitored', r.hasFile === true && r.monitored === true, r);
+  check('hasFile: v5 shape, movieFileId only', api.radarrHasFile({ id: 1, movieFileId: 7 }) === true);
+  check('hasFile: v5 shape, movieFile only', api.radarrHasFile({ id: 1, movieFile: { id: 7 } }) === true);
+  check('hasFile: legacy hasFile:true', api.radarrHasFile({ id: 1, hasFile: true, movieFileId: 0 }) === true);
+  check('hasFile: nothing downloaded', api.radarrHasFile({ id: 1, hasFile: null, movieFileId: 0, movieFile: null }) === false);
+  check('hasFile: lookup result (not in library)', api.radarrHasFile({ id: 0, tmdbId: 5 }) === false);
   check('in library -> movie url', r.url === `${base}/movie/278`, r.url);
   r = await api.radarrResolve(inception);
   check('not in library -> missing', r.status === 'missing', r);

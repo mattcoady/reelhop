@@ -19,7 +19,7 @@ Hop from the movie sites you already browse to your own media stack. ReelHop is 
 - **Plex** — click **Sign in with Plex** (or paste a token) and links deep-link straight to the film **on your own server** if it's in your library, falling back to its **Plex Discover** page. Signed out, links open Plex search — zero setup.
 - **Radarr** — the button tells you where a movie stands (**Downloaded**, **Wanted**, **Unmonitored**) and opens it in Radarr; if it isn't in Radarr yet, one click **adds it** with your chosen quality profile, root folder and minimum availability, optionally kicking off a search right away. TV shows never get a Radarr button (that's Sonarr's job, coming next).
 - **Movies and TV** — Plex matching covers films and TV shows / mini-series, by IMDb ID when available, with title + year as fallback. No confident match means a search link, never a wrong title.
-- **Fast** — Plex results are cached for 7 days; Radarr status is re-checked on every visit so it's never stale after you add something.
+- **Fast** — Plex results are cached for 7 days; Radarr status is re-checked on every visit, and again when a tab comes back into view, so it's never stale after you add or download something.
 - **SPA-friendly** — buttons survive dynamic page updates and back/forward navigation.
 - **Private by design** — no analytics, no tracking, no third-party servers. Your Plex token and Radarr API key stay on your device and are only sent to Plex's own APIs and to the Radarr address you configured. See [PRIVACY.md](PRIVACY.md).
 

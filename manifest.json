@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ReelHop",
-  "version": "2.2.0",
+  "version": "2.2.1",
   "description": "Hop from Letterboxd and IMDb to Plex or Radarr in one click. Unofficial; not affiliated with Letterboxd, IMDb, Plex, or Radarr.",
   "icons": {
     "16": "icons/icon16.png",

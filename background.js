@@ -634,6 +634,16 @@ function radarrSearchTerm(movie) {
   return sanitizeText(movie.year ? `${movie.title} ${movie.year}` : movie.title);
 }
 
+// Radarr v5 stopped filling in MovieResource.hasFile (it is a nullable
+// "compatibility" field that ToResource never assigns), so a downloaded movie
+// arrives with hasFile null and movieFileId > 0. Trust any of the signals.
+function radarrHasFile(movie) {
+  if (!movie) return false;
+  if (movie.hasFile === true) return true;
+  if (typeof movie.movieFileId === 'number' && movie.movieFileId > 0) return true;
+  return !!(movie.movieFile && movie.movieFile.id > 0);
+}
+
 // Every Radarr answer has the same shape so the content script can paint it.
 function radarrResult(status, movie, extra = {}) {
   const out = { destination: 'radarr', status, ...extra };
@@ -643,7 +653,7 @@ function radarrResult(status, movie, extra = {}) {
     out.tmdbId = movie.tmdbId || 0;
     out.titleSlug = movie.titleSlug || '';
     out.radarrId = movie.id || 0;
-    out.hasFile = !!movie.hasFile;
+    out.hasFile = radarrHasFile(movie);
     out.monitored = !!movie.monitored;
   }
   return out;
