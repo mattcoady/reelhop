@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "ReelHop",
-  "version": "2.2.1",
-  "description": "Hop from Letterboxd and IMDb to Plex or Radarr in one click. Unofficial; not affiliated with Letterboxd, IMDb, Plex, or Radarr.",
+  "version": "2.3.0",
+  "description": "Hop from Letterboxd and IMDb to Plex or Radarr in one click, and see which posters are already on your Plex. Unofficial; not affiliated with Letterboxd, IMDb, Plex, or Radarr.",
   "icons": {
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
@@ -38,7 +38,7 @@
   "content_scripts": [
     {
       "matches": [
-        "https://letterboxd.com/film/*",
+        "https://letterboxd.com/*",
         "https://*.imdb.com/title/*"
       ],
       "js": [

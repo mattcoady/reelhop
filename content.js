@@ -10,6 +10,11 @@
 //     buttons into, one website. LETTERBOXD is the fully commented reference.
 //   - Destination state: Plex (displayState) and Radarr (radarrState), each
 //     resolved independently in the background so one can't stall the other.
+//
+// A third, Letterboxd-only module (Poster badges) marks posters on grids,
+// lists and the watchlist with a Plex chip when the title is on the user's
+// server. It batches whole pages into one message, so it costs nothing per
+// poster.
 (function () {
   'use strict';
 
@@ -529,6 +534,7 @@
         'showWatchPanel',
         'showDetailsLink',
         'showImdbButton',
+        'showPosterBadges',
         'radarrEnabled',
         'radarrUrl'
       ], (items) => {
@@ -539,6 +545,7 @@
           showWatchPanel: items.showWatchPanel !== false,
           showDetailsLink: items.showDetailsLink !== false,
           showImdbButton: items.showImdbButton !== false,
+          showPosterBadges: items.showPosterBadges !== false,
           radarrEnabled: items.radarrEnabled === true,
           radarrUrl: (items.radarrUrl || '').trim()
         };
@@ -551,24 +558,188 @@
     return `${CACHE_PREFIX}${adapterId}_${filmKey}`;
   }
 
-  function getCachedResult(adapterId, filmKey) {
+  // Fresh cached results for many films at once: { filmKey: result }.
+  function getCachedResults(adapterId, filmKeys) {
     return new Promise((resolve) => {
-      const key = cacheKey(adapterId, filmKey);
-      chrome.storage.local.get(key, (items) => {
-        const data = items[key];
-        if (data && data.url && Date.now() - data.timestamp < CACHE_TTL) {
-          resolve(data);
-        } else {
-          resolve(null);
-        }
+      const keys = filmKeys.map((k) => cacheKey(adapterId, k));
+      chrome.storage.local.get(keys, (items) => {
+        const out = {};
+        filmKeys.forEach((filmKey, i) => {
+          const data = items[keys[i]];
+          if (data && data.url && Date.now() - data.timestamp < CACHE_TTL) out[filmKey] = data;
+        });
+        resolve(out);
       });
     });
+  }
+
+  function getCachedResult(adapterId, filmKey) {
+    return getCachedResults(adapterId, [filmKey]).then((found) => found[filmKey] || null);
   }
 
   function setCachedResult(adapterId, filmKey, result) {
     chrome.storage.local.set({
       [cacheKey(adapterId, filmKey)]: { ...result, timestamp: Date.now() }
     });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Poster badges (Letterboxd only)
+  //
+  // Letterboxd draws every poster — browse grids, lists, the watchlist, a film
+  // page's "similar films" — with one React component that carries the film's
+  // slug and "Title (Year)". We collect the posters on the page, ask the
+  // worker about all of them in one plexLibraryMatch message, and give the
+  // ones on the user's server a small Plex chip that deep-links to the item.
+  // Answers are kept for the page's lifetime so re-renders repaint for free.
+  // ---------------------------------------------------------------------------
+
+  // Letterboxd renders every poster with this one component; the link check
+  // keeps us to films if it is ever reused for people, lists or other items.
+  const POSTER_SELECTOR = '.react-component[data-item-slug][data-item-link^="/film/"]';
+  const POSTER_BADGE_CLASS = 'reelhop-poster-badge';
+  const POSTER_MIN_WIDTH = 60;   // thumbnails are too small for a chip
+  const POSTER_MAX_WIDTH = 400;  // the film page's own poster already has buttons
+  const POSTER_KEYS = ['plexToken', 'showPosterBadges', 'openInNewTab']; // settings that change the chips
+  const posterResults = new Map(); // slug -> match | null
+  const posterPending = new Set(); // slugs with a lookup in flight
+  let posterQueue = new Map();     // slug -> { title, year } waiting to be sent
+  let posterFlushTimer = null;
+  let posterScanTimer = null;
+
+  function isLetterboxd() {
+    return location.hostname.endsWith('letterboxd.com');
+  }
+
+  function posterWidth(el) {
+    return parseInt(el.dataset.imageWidth, 10) || el.getBoundingClientRect().width || 0;
+  }
+
+  // "Title (Year)" from the component's data, or the image alt as a fallback.
+  // The lazy group means a title that itself ends in a year still parses.
+  function posterFilm(el) {
+    const raw = el.dataset.itemName || el.dataset.itemFullDisplayName ||
+                (el.querySelector('img') || {}).alt || '';
+    const name = sanitizeText(raw).replace(/^Poster for\s+/i, '');
+    const m = name.match(/^(.*?)\s*\((\d{4})\)$/);
+    return m ? { title: m[1], year: m[2] } : { title: name, year: '' };
+  }
+
+  function posterSizeClass(width) {
+    if (width < 100) return '-sm';
+    if (width > 160) return '-lg';
+    return '';
+  }
+
+  // Add, update or remove the chip on one poster to reflect `match`. Letterboxd
+  // mutates these grids constantly (lazy images, hover cards), and every
+  // mutation costs us a rescan, so this returns early when the poster is
+  // already in the state we want rather than rewriting attributes.
+  function paintPoster(el, match, settings) {
+    const host = el.querySelector('.film-poster, .poster') || el;
+    let badge = host.querySelector(`.${POSTER_BADGE_CLASS}`);
+    const want = match ? 'server' : 'none';
+    const wantTarget = settings.openInNewTab ? '_blank' : null;
+    if (el.dataset.reelhopPoster === want &&
+        (!match || (badge && badge.getAttribute('href') === match.url &&
+                    badge.getAttribute('target') === wantTarget))) {
+      return;
+    }
+
+    if (!match) {
+      if (badge) badge.remove();
+      el.dataset.reelhopPoster = 'none';
+      return;
+    }
+    if (!badge) {
+      badge = document.createElement('a');
+      badge.className = `${POSTER_BADGE_CLASS} ${INJECTED_CLASS} ${posterSizeClass(posterWidth(el))}`.trim();
+      badge.appendChild(createPlexIcon());
+      // Keep the click from reaching the poster's own handlers (frame link, menu).
+      badge.addEventListener('click', (e) => e.stopPropagation());
+      host.appendChild(badge);
+    }
+    badge.href = match.url;
+    badge.title = match.serverName ? `On Plex (${match.serverName})` : 'On Plex';
+    badge.setAttribute('aria-label', badge.title);
+    applyLinkTarget(badge, settings);
+    el.dataset.reelhopPoster = 'server';
+  }
+
+  // Forget everything and strip the chips; the next scan starts over.
+  function resetPosters() {
+    posterResults.clear();
+    posterPending.clear();
+    posterQueue = new Map();
+    document.querySelectorAll(`.${POSTER_BADGE_CLASS}`).forEach((el) => el.remove());
+    document.querySelectorAll('[data-reelhop-poster]').forEach((el) => { delete el.dataset.reelhopPoster; });
+  }
+
+  // Paint known posters, queue unknown ones. Cheap enough to run after every
+  // (debounced) DOM mutation: Letterboxd swaps poster nodes as images load.
+  async function scanPosters() {
+    if (!isLetterboxd()) return;
+    const settings = lastSettings || await getSettings();
+    if (!settings.showPosterBadges || !settings.plexToken) {
+      resetPosters();
+      return;
+    }
+    const adapter = getActiveAdapter();
+    const ownSlug = adapter && adapter.id === 'letterboxd' ? adapter.getKey() : '';
+
+    for (const el of document.querySelectorAll(POSTER_SELECTOR)) {
+      const slug = el.dataset.itemSlug;
+      if (!slug || slug === ownSlug) continue;
+      const width = posterWidth(el);
+      if (width < POSTER_MIN_WIDTH || width > POSTER_MAX_WIDTH) continue;
+      if (posterResults.has(slug)) {
+        paintPoster(el, posterResults.get(slug), settings);
+      } else if (!posterPending.has(slug)) {
+        const film = posterFilm(el);
+        if (!film.title) continue;
+        el.dataset.reelhopPoster = 'pending';
+        posterPending.add(slug);
+        posterQueue.set(slug, film);
+      }
+    }
+    if (posterQueue.size > 0 && !posterFlushTimer) {
+      posterFlushTimer = setTimeout(flushPosterQueue, 150);
+    }
+  }
+
+  async function flushPosterQueue() {
+    posterFlushTimer = null;
+    const batch = posterQueue;
+    posterQueue = new Map();
+    if (batch.size === 0) return;
+
+    // Film pages already resolved some of these (7-day cache); a server hit
+    // there counts here too, so a title Plex spells differently keeps its chip.
+    const cached = await getCachedResults('letterboxd', [...batch.keys()]);
+    const films = [...batch].map(([key, film]) => ({ key, title: film.title, year: film.year }));
+    let res = null;
+    try {
+      res = await chrome.runtime.sendMessage({ action: 'plexLibraryMatch', films });
+    } catch (e) {
+      console.warn('[ReelHop] Poster lookup failed:', e);
+    }
+
+    for (const key of batch.keys()) {
+      let match = res && res.ok ? res.matches[key] || null : null;
+      const c = cached[key];
+      if (!match && c && c.type === 'server') match = { type: 'server', url: c.url, serverName: c.serverName };
+      posterResults.set(key, match);
+      posterPending.delete(key);
+    }
+    scanPosters();
+  }
+
+  function schedulePosterScan() {
+    if (!isLetterboxd() || posterScanTimer) return;
+    posterScanTimer = setTimeout(() => {
+      posterScanTimer = null;
+      scanPosters();
+    }, 250);
   }
 
   // ---------------------------------------------------------------------------
@@ -819,12 +990,14 @@
       currentUrl = location.href;
       removeAllInjected();
       scheduleInject();
+      schedulePosterScan();
     }
   }
 
   function init() {
     currentUrl = location.href;
     if (getActiveAdapter()) injectLinks();
+    scanPosters();
 
     const observer = new MutationObserver(() => {
       handleUrlChange();
@@ -833,6 +1006,7 @@
       if (getActiveAdapter() && !allLinksInjected()) {
         scheduleInject();
       }
+      schedulePosterScan();
     });
 
     observer.observe(document.body, { childList: true, subtree: true });
@@ -843,6 +1017,10 @@
       if (Object.keys(changes).some(k => k.startsWith('radarr'))) {
         radarrMemo.clear();
         radarrState = null;
+      }
+      // Token or chip settings changed: the chips describe a different world.
+      if (POSTER_KEYS.some(k => k in changes)) {
+        getSettings().then(() => { resetPosters(); scanPosters(); });
       }
       scheduleInject();
     });

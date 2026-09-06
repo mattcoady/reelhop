@@ -73,7 +73,7 @@ const routedFetch = (url, opts) => {
 
 const ctx = { chrome, fetch: routedFetch, AbortController, setTimeout, clearTimeout, console, crypto, URL, URLSearchParams, encodeURIComponent, JSON, Math, Promise, Date };
 vm.createContext(ctx);
-vm.runInContext(src + '\n;globalThis.__api = { radarrResolve, radarrAdd, radarrTest, plexResolve, normalizeRadarrUrl, radarrOriginPattern, plexSignInStart, plexSignInStatus, plexSignInCancel, plexSignOut, getPlexHeaders, radarrHasFile };', ctx);
+vm.runInContext(src + '\n;globalThis.__api = { radarrResolve, radarrAdd, radarrTest, plexResolve, normalizeRadarrUrl, radarrOriginPattern, plexSignInStart, plexSignInStatus, plexSignInCancel, plexSignOut, getPlexHeaders, radarrHasFile, plexLibraryMatch, getLibraryIndex };', ctx);
 const api = ctx.__api;
 
 // ---- tiny assert -----------------------------------------------------------
@@ -112,8 +112,54 @@ const plexServer = http.createServer((req, res) => {
     return send(200, { username: 'mattcoady' });
   }
   if (u.pathname === '/api/v2/resources') {
-    return send(200, [{ name: 'Mattflix', provides: 'server', connections: [] }, { name: 'Living Room TV', provides: 'player', connections: [] }]);
+    // The connection's uri points at the fake PMS below; `protocol` is what
+    // the worker filters on, so it says https even though the stub is plain HTTP.
+    return send(200, [
+      { name: 'Mattflix', clientIdentifier: 'mach-1', provides: 'server', accessToken: 'srv-tok',
+        connections: [{ uri: pmsBase, protocol: 'https', local: true, relay: false }] },
+      { name: 'Living Room TV', provides: 'player', connections: [] }
+    ]);
   }
+  send(404, {});
+});
+
+// ---- fake Plex Media Server ------------------------------------------------
+// Two video sections plus a music one (which must be skipped), listed by the
+// library index behind the poster badges.
+let pmsBase = '';
+const pms = { sectionCalls: 0, listCalls: 0, sectionsStatus: 200 };
+const pmsSections = [
+  { key: '1', type: 'movie', title: 'Movies' },
+  { key: '2', type: 'show', title: 'TV Shows' },
+  { key: '3', type: 'artist', title: 'Music' }
+];
+const pmsItems = {
+  '1': [
+    { ratingKey: '901', type: 'movie', title: 'Inception', year: 2010 },
+    { ratingKey: '902', type: 'movie', title: 'Spider-Man: Into the Spider-Verse', year: 2018 },
+    { ratingKey: '903', type: 'movie', title: 'PlayTime', originalTitle: 'Play Time', year: 1967 },
+    { ratingKey: '904', type: 'movie', title: 'The Thing', year: 1982 },
+    { ratingKey: '905', type: 'movie', title: 'The Thing', year: 2011 },
+    { ratingKey: '906', type: 'movie', title: 'Dune: Part Two', year: 2023 } // Letterboxd says 2024
+  ],
+  '2': [{ ratingKey: '950', type: 'show', title: 'Severance', year: 2022 }],
+  '3': [{ ratingKey: '990', type: 'track', title: 'Never Indexed', year: 1999 }]
+};
+const pmsServer = http.createServer((req, res) => {
+  const u = new URL(req.url, 'http://x');
+  const send = (code, body) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
+  if (req.headers['x-plex-token'] !== 'srv-tok') return send(401, {});
+  if (u.pathname === '/library/sections') {
+    pms.sectionCalls++;
+    if (pms.sectionsStatus !== 200) return send(pms.sectionsStatus, {});
+    return send(200, { MediaContainer: { Directory: pmsSections } });
+  }
+  const m = u.pathname.match(/^\/library\/sections\/(\d+)\/all$/);
+  if (m) {
+    pms.listCalls++;
+    return send(200, { MediaContainer: { Metadata: pmsItems[m[1]] || [] } });
+  }
+  if (u.pathname === '/hubs/search') return send(200, { MediaContainer: { Metadata: [] } });
   send(404, {});
 });
 
@@ -165,6 +211,7 @@ const radarrServer = http.createServer((req, res) => {
 
 (async () => {
   plexBase = await listen(plexServer);
+  pmsBase = await listen(pmsServer);
   const base = await listen(radarrServer);
 
   // =========================================================================
@@ -325,6 +372,68 @@ const radarrServer = http.createServer((req, res) => {
   r = await api.plexResolve(inception);
   check('no token -> search link', r.type === 'search' && r.url.includes('Inception%202010'), r);
 
+  console.log('Plex library index (poster badges)');
+  // A token change is the documented way to drop the index; it also resets the
+  // worker's in-memory copy between cases here.
+  const resetIndex = async (token) => {
+    session = {};
+    await chrome.storage.local.set({ plexToken: token });
+    await sleep(5);
+  };
+  const ask = (films) => api.plexLibraryMatch(films.map(f => ({ key: f[0], title: f[1], year: f[2] })));
+
+  local = {};
+  session = {};
+  r = await api.plexLibraryMatch([{ key: 'inception', title: 'Inception', year: '2010' }]);
+  check('no token -> no_token', r.ok === false && r.reason === 'no_token', r);
+
+  await resetIndex('tok-123');
+  pms.sectionCalls = 0; pms.listCalls = 0;
+  r = await ask([
+    ['inception', 'Inception', '2010'],
+    ['spider-man-into-the-spider-verse', 'Spider-Man: Into the Spider-Verse', '2018'],
+    ['severance', 'Severance', '2022'],
+    ['the-holdovers', 'The Holdovers', '2023']
+  ]);
+  check('indexes every video section once, skipping music', pms.sectionCalls === 1 && pms.listCalls === 2, pms);
+  check('exact title + year -> server deep link', r.ok && r.matches.inception &&
+    r.matches.inception.url.includes('mach-1') && r.matches.inception.url.includes('901') &&
+    r.matches.inception.serverName === 'Mattflix', r.matches);
+  check('punctuation and case are ignored', !!r.matches['spider-man-into-the-spider-verse'], r.matches);
+  check('TV shows are indexed too', r.matches.severance && r.matches.severance.ratingKey === '950', r.matches);
+  check('a title that is not on the server has no match', !('the-holdovers' in r.matches), r.matches);
+  check('report counts what was indexed', r.indexed === 7 && r.servers === 1, r);
+
+  pms.sectionCalls = 0; pms.listCalls = 0;
+  r = await ask([['playtime', 'Play Time', '1967'], ['dune-part-two', 'Dune: Part Two', '2024']]);
+  check('second batch reuses the index (no refetch)', pms.sectionCalls === 0 && pms.listCalls === 0, pms);
+  check('original title matches', r.matches.playtime && r.matches.playtime.ratingKey === '903', r.matches);
+  check('a year one off still matches', r.matches['dune-part-two'] && r.matches['dune-part-two'].ratingKey === '906', r.matches);
+
+  r = await ask([['the-thing', 'The Thing', '1982'], ['the-thing-2011', 'The Thing', '2011']]);
+  check('same title, different years -> each takes its own year', r.matches['the-thing'].ratingKey === '904' &&
+    r.matches['the-thing-2011'].ratingKey === '905', r.matches);
+  r = await ask([['the-thing', 'The Thing', ''], ['inception', 'Inception', '']]);
+  check('no year + ambiguous title -> no guess', !('the-thing' in r.matches), r.matches);
+  check('no year + one candidate -> matched', !!r.matches.inception, r.matches);
+  r = await ask([['x', '', '1982'], ['never-indexed', 'Never Indexed', '1999']]);
+  check('empty title and music tracks never match', Object.keys(r.matches).length === 0, r.matches);
+
+  // The index survives the worker sleeping: it is rebuilt from session storage.
+  check('index is kept in session storage', !!(session.libraryIndex && session.libraryIndex.entries.length === 7), Object.keys(session));
+
+  await resetIndex('tok-123');
+  check('a token change drops the stored index', !session.libraryIndex, session);
+  pms.sectionsStatus = 500;
+  await resetIndex('tok-123');
+  r = await ask([['inception', 'Inception', '2010']]);
+  check('server unreachable -> reported, not cached as empty', r.ok === false && r.reason === 'unreachable' && !session.libraryIndex, r);
+  pms.sectionsStatus = 200;
+  await resetIndex('tok-123');
+  pms.sectionCalls = 0;
+  const both = await Promise.all([ask([['inception', 'Inception', '2010']]), ask([['severance', 'Severance', '2022']])]);
+  check('concurrent tabs share one build', pms.sectionCalls === 1 && both[0].ok && both[1].ok, pms);
+
   console.log('settings page');
   const route = (msg) => new Promise((resolve) => listeners.message[0](msg, {}, resolve));
   session = {};
@@ -342,6 +451,7 @@ const radarrServer = http.createServer((req, res) => {
 
   console.log(`\n${pass} passed, ${fail} failed`);
   plexServer.close();
+  pmsServer.close();
   radarrServer.close();
   process.exit(fail ? 1 : 0);
 })().catch((e) => { console.error(e); process.exit(1); });

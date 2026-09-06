@@ -39,6 +39,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const showSidebarCheckbox = $('showSidebarButton');
   const showWatchPanelCheckbox = $('showWatchPanel');
   const showDetailsLinkCheckbox = $('showDetailsLink');
+  const showPosterBadgesCheckbox = $('showPosterBadges');
   const showImdbButtonCheckbox = $('showImdbButton');
 
   // Data
@@ -539,21 +540,42 @@ document.addEventListener('DOMContentLoaded', () => {
     return Object.keys(items).filter(k => k.startsWith('cacheTarget_'));
   }
 
+  // The worker keeps a per-session index of every title on the user's Plex
+  // servers for poster badges; it lives in session storage.
+  async function libraryIndexSummary() {
+    try {
+      const { libraryIndex } = await chrome.storage.session.get('libraryIndex');
+      if (!libraryIndex || !Array.isArray(libraryIndex.entries)) return '';
+      const n = libraryIndex.entries.length;
+      const servers = (libraryIndex.servers || []).length;
+      const mins = Math.max(0, Math.round((Date.now() - libraryIndex.timestamp) / 60000));
+      return `Plex library index: ${n.toLocaleString()} title${n === 1 ? '' : 's'} from ${servers} server${servers === 1 ? '' : 's'}, refreshed ${mins < 1 ? 'just now' : `${mins} min ago`}.`;
+    } catch (e) {
+      return '';
+    }
+  }
+
   async function refreshCacheCount() {
     const keys = await cacheKeys();
-    cacheCountEl.textContent = keys.length === 0
+    const index = await libraryIndexSummary();
+    const links = keys.length === 0
       ? 'No cached film links.'
       : `${keys.length} cached film link${keys.length === 1 ? '' : 's'}.`;
-    clearCacheBtn.disabled = keys.length === 0;
+    cacheCountEl.textContent = index ? `${links} ${index}` : links;
+    clearCacheBtn.disabled = keys.length === 0 && !index;
   }
 
   clearCacheBtn.addEventListener('click', async () => {
     const keys = await cacheKeys();
-    try { await chrome.storage.session.remove('serverCache'); } catch (e) {}
+    const hadIndex = !!(await libraryIndexSummary());
+    try { await chrome.storage.session.remove(['serverCache', 'libraryIndex']); } catch (e) {}
     if (keys.length > 0) await chrome.storage.local.remove(keys);
-    showNote(dataNote, keys.length === 0
-      ? 'Nothing to clear. The cached server list was refreshed anyway.'
-      : `Cleared ${keys.length} cached film link${keys.length === 1 ? '' : 's'} and the cached server list.`, 'info', 4000);
+    const parts = [];
+    if (keys.length > 0) parts.push(`${keys.length} cached film link${keys.length === 1 ? '' : 's'}`);
+    if (hadIndex) parts.push('the Plex library index');
+    parts.push('the cached server list');
+    const list = parts.length > 1 ? `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}` : parts[0];
+    showNote(dataNote, `Cleared ${list}. Pages rebuild them on the next visit.`, 'info', 4000);
     refreshCacheCount();
   });
 
@@ -646,6 +668,7 @@ document.addEventListener('DOMContentLoaded', () => {
     'showWatchPanel',
     'showDetailsLink',
     'showImdbButton',
+    'showPosterBadges',
     'radarrEnabled',
     'radarrUrl',
     'radarrApiKey',
@@ -661,6 +684,7 @@ document.addEventListener('DOMContentLoaded', () => {
     showSidebarCheckbox.checked = items.showSidebarButton !== false;
     showWatchPanelCheckbox.checked = items.showWatchPanel !== false;
     showDetailsLinkCheckbox.checked = items.showDetailsLink !== false;
+    showPosterBadgesCheckbox.checked = items.showPosterBadges !== false;
     showImdbButtonCheckbox.checked = items.showImdbButton !== false;
 
     radarrEnabled.checked = items.radarrEnabled === true;

@@ -18,8 +18,9 @@ Hop from the movie sites you already browse to your own media stack. ReelHop is 
   - On **IMDb** title pages: a row of destination pills under the title, styled to match IMDb's own buttons (dark and white "Reference view" both handled).
 - **Plex** — click **Sign in with Plex** (or paste a token) and links deep-link straight to the film **on your own server** if it's in your library, falling back to its **Plex Discover** page. Signed out, links open Plex search — zero setup.
 - **Radarr** — the button tells you where a movie stands (**Downloaded**, **Wanted**, **Unmonitored**) and opens it in Radarr; if it isn't in Radarr yet, one click **adds it** with your chosen quality profile, root folder and minimum availability, optionally kicking off a search right away. TV shows never get a Radarr button (that's Sonarr's job, coming next).
+- **Poster badges** — every Letterboxd poster grid (browse pages, lists, your watchlist, "similar films") gets a small Plex mark on the films that are already on your server, so you can see what you own without opening anything. One request per page, not per poster.
 - **Movies and TV** — Plex matching covers films and TV shows / mini-series, by IMDb ID when available, with title + year as fallback. No confident match means a search link, never a wrong title.
-- **Fast** — Plex results are cached for 7 days; Radarr status is re-checked on every visit, and again when a tab comes back into view, so it's never stale after you add or download something.
+- **Fast** — Plex results are cached for 7 days; poster badges come from a list of your library titles built once per browser session; Radarr status is re-checked on every visit, and again when a tab comes back into view, so it's never stale after you add or download something.
 - **SPA-friendly** — buttons survive dynamic page updates and back/forward navigation.
 - **Private by design** — no analytics, no tracking, no third-party servers. Your Plex token and Radarr API key stay on your device and are only sent to Plex's own APIs and to the Radarr address you configured. See [PRIVACY.md](PRIVACY.md).
 
@@ -79,18 +80,20 @@ The settings page opens in a tab (toolbar icon, or the extension's **Details →
 | Radarr: Quality profile / Root folder | first available | Used for one-click adds |
 | Radarr: Minimum availability | Released | Passed through to Radarr on add |
 | Radarr: Search on add | on | Tells Radarr to start looking as soon as the movie is added |
+| Letterboxd: Poster badges | on | Marks posters in grids, lists and watchlists that are on your Plex server |
 | Letterboxd / IMDb placements | all on | Choose which buttons and links to show, per site |
 | Open links in a new tab | on | Open destination links in a new tab |
-| Data: Clear cache | — | Drops the 7-day film-link cache and the cached server list |
+| Data: Clear cache | — | Drops the 7-day film-link cache, the Plex library index and the cached server list |
 
 ---
 
 ## How it works
 
-- A content script reads the film's title, year, IMDb / TMDb IDs and media type from the page and injects the buttons. Each destination is resolved independently and in parallel, so a slow or offline Radarr never delays the Plex link.
+- A content script reads the film's title, year, IMDb / TMDb IDs and media type from the page and injects the buttons. Each destination is resolved independently and in parallel, so a slow or offline Radarr never delays the Plex link. On Letterboxd it also runs on non-film pages, where its only job is the poster badges.
 - All network calls happen in the background service worker. It has permission for Plex's own domains (`plex.tv`, `discover.provider.plex.tv`, `*.plex.direct`) out of the box; access to your Radarr host is an **optional permission** that Chrome grants only when you press **Connect** on the settings page, and only for that host.
 - **Sign in with Plex** is Plex's PIN flow: the worker asks `plex.tv` for a PIN, opens Plex's hosted sign-in page in a popup window with that PIN, and polls the PIN until Plex attaches a token. Changing the token (sign-in, paste, sign-out) drops the cached server list and film links so pages re-resolve for the new account.
 - **Plex**: with a token, it searches your servers' libraries (`/hubs/search`) and Plex Discover across both movie and TV-show types, matching by IMDb ID first, then normalized title + year (±1). Results are cached locally for 7 days (clearable from the settings page).
+- **Poster badges**: searching per poster would mean dozens of requests per grid, so the worker instead lists every movie and show section once (`/library/sections/<id>/all`, trimmed to title, year and rating key) and keeps that index in session storage for 30 minutes. The content script sends one message per batch of posters and matches locally on normalized title + year (±1); a title that appears twice with no year to separate it gets no badge rather than a wrong one.
 - **Radarr**: it looks the movie up (`/api/v3/movie/lookup` by IMDb ID, then TMDB ID, then title), confirms whether it's already in your library (`/api/v3/movie?tmdbId=`), and on click POSTs the lookup result back to `/api/v3/movie` with your profile, root folder and availability. The API key is sent only as the `X-Api-Key` header, only to your configured URL.
 
 ---
@@ -113,7 +116,7 @@ The settings page opens in a tab (toolbar icon, or the extension's **Details →
 ```
 manifest.json     MV3 manifest
 background.js     Service worker — all Plex and Radarr API calls
-content.js        Per-site DOM scraping + destination buttons
+content.js        Per-site DOM scraping, destination buttons, Letterboxd poster badges
 content.css       Injected button styling
 options.html/js/css Settings page (opens in a tab; no popup)
 generate_icons.py Regenerates the icon PNGs
@@ -122,7 +125,7 @@ test/             Node tests for the background worker (fake Plex + Radarr)
 
 Run the tests with `node test/background.test.js` (no dependencies).
 
-Test on any Letterboxd film page (e.g. [The Dark Knight](https://letterboxd.com/film/the-dark-knight/)) or IMDb title page (e.g. [Inception](https://www.imdb.com/title/tt1375666/)).
+Test on any Letterboxd film page (e.g. [The Dark Knight](https://letterboxd.com/film/the-dark-knight/)) or IMDb title page (e.g. [Inception](https://www.imdb.com/title/tt1375666/)). Poster badges show up on any Letterboxd poster grid, such as [popular films of the 2020s](https://letterboxd.com/films/popular/decade/2020s/) or your own watchlist.
 
 ### Adding a new source
 

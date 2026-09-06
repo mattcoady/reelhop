@@ -2,9 +2,10 @@
 //
 // Every network call happens here (never in content scripts), so the
 // extension only needs narrow host permissions: Plex's own domains, plus the
-// single Radarr origin the user grants at runtime from the popup.
+// single Radarr origin the user grants at runtime from the settings page.
 //
-// Sections: Plex (resolve + test), Plex sign-in (PIN flow), Radarr, router.
+// Sections: Plex (resolve + test), Plex library index (poster badges), Plex
+// sign-in (PIN flow), Radarr, settings page, router.
 //
 // Destinations each get their own section and their own message actions
 // (plexResolve, radarrResolve, radarrAdd, ...). The content script asks for
@@ -111,6 +112,20 @@ async function getUserServers(token) {
   return [];
 }
 
+// A server's connections, best first: local before remote, relay last. Only
+// secure connections; the token travels in a header, never the URL.
+function orderedConnections(server) {
+  return (server.connections || [])
+    .filter(c => c.uri && c.protocol === 'https')
+    .sort((a, b) => {
+      if (a.local && !b.local) return -1;
+      if (!a.local && b.local) return 1;
+      if (a.relay && !b.relay) return 1;
+      if (!a.relay && b.relay) return -1;
+      return 0;
+    });
+}
+
 // 2. Search the user's personal servers for the movie or show
 async function searchUserServers(title, year, token, imdbId, mediaType) {
   const servers = await getUserServers(token);
@@ -126,18 +141,7 @@ async function searchUserServers(title, year, token, imdbId, mediaType) {
 
   for (const server of servers) {
     const serverToken = server.accessToken || token;
-    // Only secure connections; the token travels in a header, never the URL.
-    const connections = server.connections
-      .filter(c => c.uri && c.protocol === 'https')
-      .sort((a, b) => {
-        if (a.local && !b.local) return -1;
-        if (!a.local && b.local) return 1;
-        if (a.relay && !b.relay) return 1;
-        if (!a.relay && b.relay) return -1;
-        return 0;
-      });
-
-    for (const conn of connections) {
+    for (const conn of orderedConnections(server)) {
       try {
         const searchUrl = `${conn.uri}/hubs/search?query=${encodeURIComponent(cleanTitle)}&limit=10`;
         const response = await fetchWithTimeout(searchUrl, {
@@ -289,6 +293,194 @@ async function plexResolve(movie) {
     type: 'search',
     url: getSearchUrl(movie.title, movie.year)
   };
+}
+
+// ===========================================================================
+// Plex library index
+//
+// Grid pages (Letterboxd lists, the watchlist, "popular" browsing) show
+// dozens of posters at once. Resolving each one like a film page would mean
+// dozens of /hubs/search calls per server, so instead the worker lists every
+// movie and show section once, keeps the result for the browser session, and
+// matches whole batches of posters locally by normalized title + year.
+// ===========================================================================
+
+const LIBRARY_INDEX_TTL = 30 * 60 * 1000; // rebuild after 30 minutes
+const LIBRARY_FETCH_TIMEOUT = 30000;      // one listing can be a few MB on a big library
+
+let libraryIndexMemo = null;    // { timestamp, servers, entries, byTitle }
+let libraryIndexPromise = null; // in-flight build shared by concurrent tabs
+
+// Fields to keep per item; Plex's own clients use the same exclusion
+// parameters to slim the listing (harmless on servers that ignore them).
+const LIBRARY_LISTING_QUERY = 'includeGuids=1' +
+  '&excludeFields=summary,tagline,art,thumb,contentRating,studio,audienceRating,rating,userRating,duration,addedAt,updatedAt,lastViewedAt,originallyAvailableAt,chapterSource,primaryExtraKey,ratingImage,audienceRatingImage,titleSort,slug,key,guid,skipCount,viewCount,viewOffset,lastRatedAt,hasPremiumExtras,hasPremiumPrimaryExtra' +
+  '&excludeElements=Media,Genre,Director,Writer,Country,Role,Collection,Producer,Image,UltraBlurColors,Label,Field,Rating,Chapter,Marker,Extras,Similar,Location,Review';
+
+function libraryEntryFrom(item, serverIndex) {
+  const title = normalize(item.title || '');
+  if (!title) return null;
+  const original = normalize(item.originalTitle || '');
+  const entry = { s: serverIndex, k: String(item.ratingKey), t: title, y: parseInt(item.year, 10) || 0 };
+  if (original && original !== title) entry.o = original;
+  return entry;
+}
+
+// One request per movie/show section on every reachable server.
+async function fetchLibraryIndex(token) {
+  const servers = await getUserServers(token);
+  if (!servers || servers.length === 0) return { servers: [], entries: [], reachable: 0 };
+
+  const out = { servers: [], entries: [], reachable: 0 };
+  for (const server of servers) {
+    const serverToken = server.accessToken || token;
+    const headers = { 'Accept': 'application/json', 'X-Plex-Token': serverToken };
+
+    // Find a connection that answers, then stick with it for the listings.
+    let base = null;
+    let sections = [];
+    for (const conn of orderedConnections(server)) {
+      try {
+        const res = await fetchWithTimeout(`${conn.uri}/library/sections`, { headers }, 8000);
+        if (!res.ok) continue;
+        const data = await res.json();
+        sections = (data.MediaContainer && data.MediaContainer.Directory) || [];
+        base = conn.uri;
+        break;
+      } catch (e) {
+        // unreachable or blocked; try the next connection
+      }
+    }
+    if (!base) continue;
+
+    const serverIndex = out.servers.length;
+    out.servers.push({ machineIdentifier: server.clientIdentifier, name: server.name });
+    out.reachable++;
+
+    for (const section of sections) {
+      const type = section.type === 'movie' ? 1 : section.type === 'show' ? 2 : 0;
+      if (!type) continue; // music, photos, ...
+      try {
+        const url = `${base}/library/sections/${encodeURIComponent(section.key)}/all?type=${type}&${LIBRARY_LISTING_QUERY}`;
+        const res = await fetchWithTimeout(url, { headers }, LIBRARY_FETCH_TIMEOUT);
+        if (!res.ok) continue;
+        const data = await res.json();
+        for (const item of (data.MediaContainer && data.MediaContainer.Metadata) || []) {
+          const entry = libraryEntryFrom(item, serverIndex);
+          if (entry) out.entries.push(entry);
+        }
+      } catch (e) {
+        console.warn(`[ReelHop] Listing "${section.title}" on ${server.name} failed:`, e);
+      }
+    }
+  }
+  return out;
+}
+
+function indexByTitle(entries) {
+  const byTitle = new Map();
+  const add = (key, entry) => {
+    const list = byTitle.get(key);
+    if (list) list.push(entry); else byTitle.set(key, [entry]);
+  };
+  for (const entry of entries) {
+    add(entry.t, entry);
+    if (entry.o) add(entry.o, entry);
+  }
+  return byTitle;
+}
+
+// The current index: in memory, else from session storage, else rebuilt.
+// Throws only on programming errors; an unreachable server yields an index
+// with reachable === 0, which the caller reports.
+async function getLibraryIndex(token) {
+  const fresh = (idx) => idx && Date.now() - idx.timestamp < LIBRARY_INDEX_TTL;
+  if (fresh(libraryIndexMemo)) return libraryIndexMemo;
+
+  if (!libraryIndexMemo) {
+    try {
+      const { libraryIndex } = await chrome.storage.session.get('libraryIndex');
+      if (fresh(libraryIndex)) {
+        libraryIndexMemo = { ...libraryIndex, byTitle: indexByTitle(libraryIndex.entries) };
+        return libraryIndexMemo;
+      }
+    } catch (e) {
+      // storage.session unavailable; rebuild below
+    }
+  }
+
+  if (!libraryIndexPromise) {
+    libraryIndexPromise = (async () => {
+      const built = await fetchLibraryIndex(token);
+      const index = { timestamp: Date.now(), servers: built.servers, entries: built.entries, reachable: built.reachable };
+      // Nothing reachable: don't cache the empty answer for half an hour.
+      if (built.reachable > 0) {
+        libraryIndexMemo = { ...index, byTitle: indexByTitle(index.entries) };
+        try {
+          await chrome.storage.session.set({ libraryIndex: index });
+        } catch (e) {
+          console.warn('[ReelHop] Could not store the library index (too large?):', e);
+        }
+        return libraryIndexMemo;
+      }
+      return { ...index, byTitle: new Map() };
+    })().finally(() => { libraryIndexPromise = null; });
+  }
+  return libraryIndexPromise;
+}
+
+// Best library entry for one poster: exact normalized title (or original
+// title), year within ±1, preferring the exact year and a title over an
+// original-title hit. With no year to go on, only an unambiguous title counts.
+function matchLibraryEntry(index, film) {
+  const title = normalize(film.title || '');
+  if (!title) return null;
+  const candidates = index.byTitle.get(title);
+  if (!candidates || candidates.length === 0) return null;
+
+  const year = parseInt(film.year, 10) || 0;
+  if (!year) {
+    const years = new Set(candidates.map(c => c.y));
+    return years.size === 1 ? candidates[0] : null;
+  }
+
+  let best = null;
+  let bestScore = -1;
+  for (const c of candidates) {
+    if (!yearsClose(c.y, year)) continue;
+    const score = (c.y === year ? 4 : 0) + (c.t === title ? 2 : 1);
+    if (score > bestScore) { best = c; bestScore = score; }
+  }
+  return best;
+}
+
+// films: [{ key, title, year }] -> { ok, matches: { key: { type: 'server', url, serverName, ratingKey, machineIdentifier } } }
+async function plexLibraryMatch(films) {
+  const { plexToken } = await chrome.storage.local.get('plexToken');
+  if (!plexToken) return { ok: false, reason: 'no_token' };
+
+  const index = await getLibraryIndex(plexToken);
+  if (index.servers.length === 0) {
+    // Nothing answered. Tell the caller whether there was anything to answer.
+    const known = await getUserServers(plexToken);
+    return { ok: false, reason: known.length > 0 ? 'unreachable' : 'no_servers' };
+  }
+
+  const matches = {};
+  for (const film of Array.isArray(films) ? films : []) {
+    if (!film || !film.key) continue;
+    const entry = matchLibraryEntry(index, film);
+    if (!entry) continue;
+    const server = index.servers[entry.s];
+    matches[film.key] = {
+      type: 'server',
+      url: getServerUrl(server.machineIdentifier, entry.k),
+      serverName: server.name,
+      ratingKey: entry.k,
+      machineIdentifier: server.machineIdentifier
+    };
+  }
+  return { ok: true, matches, indexed: index.entries.length, servers: index.servers.length };
 }
 
 async function plexTest(token) {
@@ -532,10 +724,12 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
 });
 
 // Whenever the Plex token changes (sign-in, paste, sign-out) the cached
-// server list and film links describe a different account: drop them.
+// server list, library index and film links describe a different account:
+// drop them.
 chrome.storage.onChanged.addListener(async (changes, area) => {
   if (area !== 'local' || !changes.plexToken) return;
-  try { await chrome.storage.session.remove('serverCache'); } catch (e) { /* non-fatal */ }
+  libraryIndexMemo = null;
+  try { await chrome.storage.session.remove(['serverCache', 'libraryIndex']); } catch (e) { /* non-fatal */ }
   const all = await chrome.storage.local.get(null);
   const keys = Object.keys(all).filter(k => k.startsWith('cacheTarget_'));
   if (keys.length > 0) await chrome.storage.local.remove(keys);
@@ -549,8 +743,8 @@ pollPlexPin();
 //
 // Radarr is movies-only, so the content script never asks about TV shows.
 // The user's Radarr lives at an arbitrary URL (often plain-HTTP on a LAN), so
-// its origin is an optional host permission the popup requests when they
-// save the URL; without it every call short-circuits to status 'permission'.
+// its origin is an optional host permission the settings page requests when
+// they press Connect; without it every call short-circuits to status 'permission'.
 // ===========================================================================
 
 const RADARR_TIMEOUT = 8000;
@@ -861,6 +1055,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         case 'plexTest':
           sendResponse(await plexTest(msg.token));
+          break;
+        case 'plexLibraryMatch':
+          // Poster badges: many films at once, matched against the library index.
+          sendResponse(await plexLibraryMatch(msg.films));
           break;
         case 'plexSignInStart':
           sendResponse(await plexSignInStart());

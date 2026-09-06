@@ -218,7 +218,7 @@
         <div class="card-head">
           <span class="dest-dot letterboxd"></span>
           <h3>Letterboxd</h3>
-          <span class="pill muted">letterboxd.com/film</span>
+          <span class="pill muted">letterboxd.com</span>
         </div>
         <div class="card-body">
           <div class="setting-list">
@@ -249,6 +249,16 @@
               </div>
               <label class="switch">
                 <input type="checkbox" id="showDetailsLink" data-key="showDetailsLink" checked aria-label="Letterboxd details tab link">
+                <span class="track"></span>
+              </label>
+            </div>
+            <div class="setting-row">
+              <div class="setting-text">
+                <div class="setting-title">Poster badges</div>
+                <div class="setting-desc">A small Plex mark on posters in browse grids, lists, your watchlist and "similar films" for titles that are on your server. Needs a Plex sign-in.</div>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="showPosterBadges" data-key="showPosterBadges" checked aria-label="Letterboxd poster badges">
                 <span class="track"></span>
               </label>
             </div>
@@ -311,7 +321,7 @@
           <div class="setting-list">
             <div class="setting-row">
               <div class="setting-text">
-                <div class="setting-title">Cached film links</div>
+                <div class="setting-title">Cached lookups</div>
                 <div class="setting-desc" id="cacheCount">Checking…</div>
               </div>
               <button id="clearCacheBtn" class="btn secondary">Clear cache</button>
@@ -319,8 +329,10 @@
           </div>
           <div class="note" id="dataNote"></div>
           <p class="hint">
-            Film links are remembered for 7 days so pages load without re-asking Plex. Clear the cache if a film
-            points somewhere stale, or after changing servers. Everything ReelHop stores stays in this browser.
+            Film links are remembered for 7 days so pages load without re-asking Plex. The library index behind the
+            poster badges is a list of your Plex titles, rebuilt every 30 minutes and dropped when the browser closes.
+            Clear both if something points somewhere stale, or after changing servers. Everything ReelHop stores stays
+            in this browser.
           </p>
         </div>
       </section>

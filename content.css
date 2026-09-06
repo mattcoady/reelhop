@@ -300,3 +300,64 @@
   width: 12px;
   height: 12px;
 }
+
+/* ---------- Letterboxd: poster chips (grids, lists, watchlist) ---------- */
+/* Sits in the poster's top-right corner, above Letterboxd's hover frame.
+   The poster box (.film-poster) is position: relative on every grid size. */
+.reelhop-poster-badge {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  background: rgba(20, 24, 28, 0.9);
+  box-shadow: 0 0 0 1.5px rgba(0, 224, 84, 0.85), 0 1px 4px rgba(0, 0, 0, 0.55);
+  text-decoration: none !important;
+  cursor: pointer;
+  transition: transform 0.15s ease-in-out, box-shadow 0.15s ease-in-out;
+}
+
+.reelhop-poster-badge svg {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+}
+
+.reelhop-poster-badge:hover {
+  transform: scale(1.12);
+  box-shadow: 0 0 0 1.5px #00e054, 0 0 10px rgba(229, 160, 13, 0.55);
+}
+
+/* Small posters (70px browse grids) */
+.reelhop-poster-badge.-sm {
+  top: 3px;
+  right: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  box-shadow: 0 0 0 1px rgba(0, 224, 84, 0.85), 0 1px 3px rgba(0, 0, 0, 0.55);
+}
+
+.reelhop-poster-badge.-sm svg {
+  width: 10px;
+  height: 10px;
+}
+
+/* Large posters (230px lists and "size/large" grids) */
+.reelhop-poster-badge.-lg {
+  top: 6px;
+  right: 6px;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+}
+
+.reelhop-poster-badge.-lg svg {
+  width: 16px;
+  height: 16px;
+}

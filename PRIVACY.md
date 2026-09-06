@@ -13,6 +13,7 @@ All data is stored locally in your browser via `chrome.storage.local` and is nev
 - **Radarr option lists**: the names of your quality profiles and root folder paths, fetched when you press "Connect" so the settings page can offer them as choices.
 - **Settings**: your display and behavior preferences.
 - **Film link cache**: mappings from films to Plex URLs, kept for 7 days to avoid repeated lookups. You can clear this at any time from the settings page. Radarr status is not cached beyond the current page.
+- **Plex library index** (only if poster badges are on): the title, year and item id of what is in your own Plex libraries, used to mark posters you already own. It is held in session storage, rebuilt every 30 minutes, discarded when the browser closes, and clearable from the settings page. Nothing about your library is sent anywhere.
 - **A random client identifier**: generated locally, sent only to Plex as the standard `X-Plex-Client-Identifier` header.
 
 ## What the extension sends, and to whom
@@ -21,7 +22,7 @@ Network requests are made only to the services you have configured, and only whe
 
 - `plex.tv` — to create and check the sign-in PIN when you use "Sign in with Plex", to verify your Plex token, and to list your own Plex servers.
 - `discover.provider.plex.tv` — to look up films on Plex Discover.
-- Your own Plex server(s) via their secure `*.plex.direct` addresses — to check whether a film is in your library.
+- Your own Plex server(s) via their secure `*.plex.direct` addresses — to check whether a film is in your library, and (for poster badges) to list your libraries' titles.
 - **Your own Radarr instance**, at the exact address you entered — to look up a movie, check whether it is already in your library, load your quality profiles and root folders, and (only when you click the button) add the movie. Access to this address is an optional browser permission that Chrome asks you to grant when you save it; ReelHop never requests access to any other site.
 
 Requests to Plex include your Plex token as a header, and requests to Radarr include your API key as the `X-Api-Key` header, because those services require them for authentication. No data is sent to Letterboxd or IMDb beyond loading the pages you visit normally, and no data is ever sent to the developer.
@@ -35,7 +36,7 @@ Requests to Plex include your Plex token as a header, and requests to Radarr inc
 
 ## Data removal
 
-Uninstalling the extension removes all stored data. You can also clear the film cache from the settings page, sign out of Plex from the settings page (which removes the token, username and server names), or remove the Radarr credentials by clearing those fields and saving. Revoking the Radarr host permission is possible at any time from your browser's extension details page.
+Uninstalling the extension removes all stored data. You can also clear the film cache and Plex library index from the settings page, sign out of Plex from the settings page (which removes the token, username and server names), or remove the Radarr credentials by clearing those fields and saving. Revoking the Radarr host permission is possible at any time from your browser's extension details page.
 
 ## Contact
 
