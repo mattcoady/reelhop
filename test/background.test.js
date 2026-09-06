@@ -15,8 +15,8 @@ src = src.replace('const PLEX_PIN_POLL_MS = 2000;', 'const PLEX_PIN_POLL_MS = 40
 let local = {};
 let session = {};
 let permissionGranted = true;
-const calls = { windowsCreate: [], windowsRemove: [], tabsCreate: [], badge: [] };
-const listeners = { storage: [], windowsRemoved: [], tabsRemoved: [] };
+const calls = { windowsCreate: [], windowsRemove: [], tabsCreate: [], badge: [], openOptions: 0 };
+const listeners = { storage: [], windowsRemoved: [], tabsRemoved: [], message: [], actionClicked: [] };
 
 function pick(store, keys) {
   if (keys === null || keys === undefined) return { ...store };
@@ -41,10 +41,14 @@ const chrome = {
     },
     onChanged: { addListener: (fn) => listeners.storage.push(fn) }
   },
-  runtime: { getManifest: () => ({ version: '2.1.0' }), onMessage: { addListener: () => {} } },
+  runtime: {
+    getManifest: () => ({ version: '2.2.0' }),
+    onMessage: { addListener: (fn) => listeners.message.push(fn) },
+    openOptionsPage: async () => { calls.openOptions++; }
+  },
   permissions: { contains: async () => permissionGranted },
   action: {
-    openPopup: async () => {},
+    onClicked: { addListener: (fn) => listeners.actionClicked.push(fn) },
     setBadgeText: ({ text }) => calls.badge.push(text),
     setBadgeBackgroundColor: () => {}
   },
@@ -314,6 +318,21 @@ const radarrServer = http.createServer((req, res) => {
   local = {};
   r = await api.plexResolve(inception);
   check('no token -> search link', r.type === 'search' && r.url.includes('Inception%202010'), r);
+
+  console.log('settings page');
+  const route = (msg) => new Promise((resolve) => listeners.message[0](msg, {}, resolve));
+  session = {};
+  r = await route({ action: 'openOptions', section: 'radarr' });
+  check('openOptions -> opens the options page', r.ok === true && calls.openOptions === 1, r);
+  check('openOptions -> remembers the section to scroll to', session.optionsFocus && session.optionsFocus.section === 'radarr', session);
+  session = {};
+  r = await route({ action: 'openOptions' });
+  check('openOptions without section leaves no focus request', r.ok === true && !('optionsFocus' in session), session);
+  listeners.actionClicked[0]();
+  await waitFor(async () => calls.openOptions === 3);
+  check('toolbar click -> opens the options page', calls.openOptions === 3, calls.openOptions);
+  r = await route({ action: 'nope' });
+  check('unknown action -> error', typeof r.error === 'string' && r.error.includes('nope'), r);
 
   console.log(`\n${pass} passed, ${fail} failed`);
   plexServer.close();

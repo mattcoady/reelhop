@@ -8,11 +8,11 @@ _Last updated: September 5, 2026_
 
 All data is stored locally in your browser via `chrome.storage.local` and is never transmitted to the developer or any third party:
 
-- **Plex authentication token** (optional): only if you use "Sign in with Plex" or paste a token into the settings popup. Sign-in happens on Plex's own page (plex.tv's PIN flow); the extension never sees your password and only receives the resulting token. Along with it, your Plex username and server names are stored so the popup can show which account is connected. The token is used solely to query Plex's APIs on your behalf.
-- **Radarr URL and API key** (optional): only if you enable the Radarr destination and enter them in the popup. They are used solely to query, and add movies to, your own Radarr instance.
-- **Radarr option lists**: the names of your quality profiles and root folder paths, fetched when you press "Connect" so the popup can offer them as choices.
+- **Plex authentication token** (optional): only if you use "Sign in with Plex" or paste a token on the settings page. Sign-in happens on Plex's own page (plex.tv's PIN flow); the extension never sees your password and only receives the resulting token. Along with it, your Plex username and server names are stored so the settings page can show which account is connected. The token is used solely to query Plex's APIs on your behalf.
+- **Radarr URL and API key** (optional): only if you enable the Radarr destination and enter them on the settings page. They are used solely to query, and add movies to, your own Radarr instance.
+- **Radarr option lists**: the names of your quality profiles and root folder paths, fetched when you press "Connect" so the settings page can offer them as choices.
 - **Settings**: your display and behavior preferences.
-- **Film link cache**: mappings from films to Plex URLs, kept for 7 days to avoid repeated lookups. You can clear this at any time from the popup. Radarr status is not cached beyond the current page.
+- **Film link cache**: mappings from films to Plex URLs, kept for 7 days to avoid repeated lookups. You can clear this at any time from the settings page. Radarr status is not cached beyond the current page.
 - **A random client identifier**: generated locally, sent only to Plex as the standard `X-Plex-Client-Identifier` header.
 
 ## What the extension sends, and to whom
@@ -35,7 +35,7 @@ Requests to Plex include your Plex token as a header, and requests to Radarr inc
 
 ## Data removal
 
-Uninstalling the extension removes all stored data. You can also clear the film cache from the popup, sign out of Plex from the popup (which removes the token, username and server names), or remove the Radarr credentials by clearing those fields and saving. Revoking the Radarr host permission is possible at any time from your browser's extension details page.
+Uninstalling the extension removes all stored data. You can also clear the film cache from the settings page, sign out of Plex from the settings page (which removes the token, username and server names), or remove the Radarr credentials by clearing those fields and saving. Revoking the Radarr host permission is possible at any time from your browser's extension details page.
 
 ## Contact
 

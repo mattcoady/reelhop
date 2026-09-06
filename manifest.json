@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ReelHop",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "Hop from Letterboxd and IMDb to Plex or Radarr in one click. Unofficial; not affiliated with Letterboxd, IMDb, Plex, or Radarr.",
   "icons": {
     "16": "icons/icon16.png",
@@ -9,13 +9,16 @@
     "128": "icons/icon128.png"
   },
   "action": {
-    "default_popup": "popup.html",
-    "default_title": "ReelHop Settings",
+    "default_title": "ReelHop settings",
     "default_icon": {
       "16": "icons/icon16.png",
       "48": "icons/icon48.png",
       "128": "icons/icon128.png"
     }
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
   },
   "permissions": [
     "storage"

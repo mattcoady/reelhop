@@ -818,6 +818,27 @@ async function radarrTest(input) {
 }
 
 // ===========================================================================
+// Settings page
+// ===========================================================================
+
+// openOptionsPage() focuses an already-open settings tab rather than opening a
+// second one, so the section to scroll to travels through session storage.
+// The settings page reads (and clears) it on load, and watches for changes
+// while it is already open.
+async function openOptions(section) {
+  try {
+    if (section) await chrome.storage.session.set({ optionsFocus: { section, at: Date.now() } });
+    await chrome.runtime.openOptionsPage();
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+}
+
+// No default popup: clicking the toolbar icon opens the settings tab.
+chrome.action.onClicked.addListener(() => { openOptions(); });
+
+// ===========================================================================
 // Message router
 // ===========================================================================
 
@@ -852,14 +873,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case 'radarrTest':
           sendResponse(await radarrTest(msg.config || {}));
           break;
-        case 'openPopup':
-          // Best effort: lets an on-page "Needs access" button open settings.
-          try {
-            await chrome.action.openPopup();
-            sendResponse({ ok: true });
-          } catch (e) {
-            sendResponse({ ok: false });
-          }
+        case 'openOptions':
+          // Lets an on-page "Needs access" button open the settings page,
+          // landing on the relevant section.
+          sendResponse(await openOptions(msg.section));
           break;
         default:
           sendResponse({ error: `Unknown action: ${msg.action}` });

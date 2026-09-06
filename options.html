@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ReelHop settings</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="brand" href="#top" aria-label="ReelHop settings">
+        <svg class="reelhop-logo" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M4.9 15.05 A7.2 7.2 0 0 1 19.1 15.05" fill="none" stroke="#3ecfb2" stroke-width="2.9" stroke-linecap="round"/>
+          <circle cx="4.8" cy="16.3" r="2.05" fill="#3ecfb2"/>
+          <circle cx="19.2" cy="16.3" r="2.05" fill="#3ecfb2"/>
+        </svg>
+        <span class="brand-name">ReelHop</span>
+        <span class="brand-sub">Settings</span>
+      </a>
+      <div class="topbar-links">
+        <span class="version" id="versionLabel"></span>
+        <a href="https://github.com/mattcoady/reelhop" target="_blank" rel="noopener noreferrer">GitHub</a>
+        <a href="https://github.com/mattcoady/reelhop/blob/main/PRIVACY.md" target="_blank" rel="noopener noreferrer">Privacy</a>
+      </div>
+    </div>
+  </header>
+
+  <div class="layout" id="top">
+    <nav class="sidenav" aria-label="Settings sections">
+      <div class="nav-group">
+        <div class="nav-title">Destinations</div>
+        <a class="nav-link" href="#plex"><span class="dest-dot plex"></span>Plex</a>
+        <a class="nav-link" href="#radarr"><span class="dest-dot radarr"></span>Radarr</a>
+      </div>
+      <div class="nav-group">
+        <div class="nav-title">Sources</div>
+        <a class="nav-link" href="#letterboxd"><span class="dest-dot letterboxd"></span>Letterboxd</a>
+        <a class="nav-link" href="#imdb"><span class="dest-dot imdb"></span>IMDb</a>
+      </div>
+      <div class="nav-group">
+        <div class="nav-title">More</div>
+        <a class="nav-link" href="#general">General</a>
+        <a class="nav-link" href="#data">Data</a>
+      </div>
+    </nav>
+
+    <main class="main">
+      <p class="intro">
+        Pick where a film page can send you. Each destination gets its own button on Letterboxd and IMDb.
+        Changes save as you make them.
+      </p>
+
+      <h2 class="group-heading">Destinations</h2>
+
+      <!-- Plex -->
+      <section class="card" id="plex">
+        <div class="card-head">
+          <span class="dest-dot plex"></span>
+          <h3>Plex</h3>
+          <span class="pill muted">Always on</span>
+        </div>
+        <div class="card-body">
+          <div id="plexSignedOut">
+            <div class="plex-row">
+              <button id="plexSignInBtn" class="btn plex">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 2.5h6l8.5 9.5-8.5 9.5h-6l8.5-9.5L3.5 2.5z"/></svg>
+                Sign in with Plex
+              </button>
+              <p class="hint">
+                Opens Plex's own sign-in page in a small window. ReelHop never sees your password;
+                it only receives a token, stored on this device. Without signing in, Plex buttons open Plex search.
+              </p>
+            </div>
+            <button id="plexTokenToggle" class="link-btn">Paste a token instead</button>
+            <div id="plexTokenManual" class="token-manual" hidden>
+              <label for="plexToken">Plex token</label>
+              <div class="inline-form">
+                <input type="password" id="plexToken" placeholder="Paste your X-Plex-Token here…" autocomplete="off" spellcheck="false">
+                <button id="plexTokenSaveBtn" class="btn secondary">Use this token</button>
+              </div>
+              <p class="hint">
+                Checked with Plex, then kept on this device and only ever sent to Plex.
+                <a href="https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/" target="_blank" rel="noopener noreferrer">Where to find a token &rarr;</a>
+              </p>
+            </div>
+          </div>
+
+          <div id="plexPending" hidden>
+            <div class="plex-account">
+              <span class="spinner" aria-hidden="true"></span>
+              <div class="plex-account-text">Finish signing in on the Plex window that just opened. This page updates by itself.</div>
+              <button id="plexCancelBtn" class="link-btn">Cancel</button>
+            </div>
+          </div>
+
+          <div id="plexSignedIn" hidden>
+            <div class="plex-account">
+              <svg class="plex-account-logo" viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 2.5h6l8.5 9.5-8.5 9.5h-6l8.5-9.5L3.5 2.5z"/></svg>
+              <div class="plex-account-text">
+                <div>Signed in as <strong id="plexUsername"></strong></div>
+                <div class="plex-account-sub" id="plexServers"></div>
+              </div>
+              <button id="plexSignOutBtn" class="link-btn">Sign out</button>
+            </div>
+          </div>
+
+          <div class="note" id="plexNote"></div>
+
+          <div class="setting-list">
+            <div class="setting-row">
+              <div class="setting-text">
+                <div class="setting-title">Link destination</div>
+                <div class="setting-desc">Where the Plex button points when a film is found.</div>
+              </div>
+              <select id="preferredMode" data-key="preferredMode">
+                <option value="server_first">Smart: your server first, then Discover</option>
+                <option value="discover_only">Plex Discover only</option>
+                <option value="server_only">Your server only</option>
+                <option value="search_only">Universal search</option>
+              </select>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Radarr -->
+      <section class="card" id="radarr">
+        <div class="card-head">
+          <span class="dest-dot radarr"></span>
+          <h3>Radarr</h3>
+          <label class="switch">
+            <input type="checkbox" id="radarrEnabled" data-key="radarrEnabled" aria-label="Enable Radarr">
+            <span class="track"></span>
+            <span class="switch-label">Enabled</span>
+          </label>
+        </div>
+        <div class="card-body" id="radarrOff">
+          <p class="hint flush">
+            Adds an <strong>Add to Radarr</strong> button to movie pages, showing whether the film is already in
+            your library. Turn it on to set it up.
+          </p>
+        </div>
+        <div class="card-body" id="radarrBody" hidden>
+          <div class="form-grid">
+            <div class="form-group">
+              <label for="radarrUrl">Radarr address</label>
+              <input type="text" id="radarrUrl" placeholder="http://192.168.1.10:7878" autocomplete="off" spellcheck="false">
+              <p class="hint">Include a URL base if Radarr has one, e.g. <strong>…/radarr</strong>.</p>
+            </div>
+            <div class="form-group">
+              <label for="radarrApiKey">API key</label>
+              <input type="password" id="radarrApiKey" placeholder="Radarr → Settings → General → Security" autocomplete="off">
+            </div>
+          </div>
+
+          <div class="connect-row">
+            <button id="radarrTestBtn" class="btn primary">Connect</button>
+            <span class="conn-status muted" id="radarrConn">Not connected</span>
+          </div>
+          <p class="hint">
+            Connecting asks Chrome to let ReelHop talk to this address, and nothing else, then loads your
+            quality profiles and root folders.
+          </p>
+
+          <div class="note" id="radarrNote"></div>
+
+          <div class="form-grid">
+            <div class="form-group">
+              <label for="radarrQualityProfile">Quality profile</label>
+              <select id="radarrQualityProfile" data-key="radarrQualityProfileId" data-type="int">
+                <option value="">Connect to load…</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="radarrRootFolder">Root folder</label>
+              <select id="radarrRootFolder" data-key="radarrRootFolder">
+                <option value="">Connect to load…</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="setting-list">
+            <div class="setting-row">
+              <div class="setting-text">
+                <div class="setting-title">Minimum availability</div>
+                <div class="setting-desc">When Radarr should consider an added movie available to grab.</div>
+              </div>
+              <select id="radarrMinAvailability" data-key="radarrMinAvailability">
+                <option value="announced">Announced</option>
+                <option value="inCinemas">In cinemas</option>
+                <option value="released">Released</option>
+              </select>
+            </div>
+            <div class="setting-row">
+              <div class="setting-text">
+                <div class="setting-title">Search on add</div>
+                <div class="setting-desc">Start searching for a release as soon as a movie is added.</div>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="radarrSearchOnAdd" data-key="radarrSearchOnAdd" checked aria-label="Search on add">
+                <span class="track"></span>
+              </label>
+            </div>
+          </div>
+
+          <p class="hint">
+            With a profile and root folder chosen, the on-page button adds a movie in one click.
+            Without them it opens Radarr's add page instead.
+          </p>
+        </div>
+      </section>
+
+      <h2 class="group-heading">Sources</h2>
+
+      <!-- Letterboxd -->
+      <section class="card" id="letterboxd">
+        <div class="card-head">
+          <span class="dest-dot letterboxd"></span>
+          <h3>Letterboxd</h3>
+          <span class="pill muted">letterboxd.com/film</span>
+        </div>
+        <div class="card-body">
+          <div class="setting-list">
+            <div class="setting-row">
+              <div class="setting-text">
+                <div class="setting-title">Sidebar buttons</div>
+                <div class="setting-desc">One button per destination in the film page's right-hand column.</div>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="showSidebarButton" data-key="showSidebarButton" checked aria-label="Letterboxd sidebar buttons">
+                <span class="track"></span>
+              </label>
+            </div>
+            <div class="setting-row">
+              <div class="setting-text">
+                <div class="setting-title">"Where to Watch" badge</div>
+                <div class="setting-desc">A Plex entry in the streaming services list.</div>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="showWatchPanel" data-key="showWatchPanel" checked aria-label="Letterboxd &quot;Where to Watch&quot; badge">
+                <span class="track"></span>
+              </label>
+            </div>
+            <div class="setting-row">
+              <div class="setting-text">
+                <div class="setting-title">Details tab link</div>
+                <div class="setting-desc">A Plex link beside the IMDb and TMDb links.</div>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="showDetailsLink" data-key="showDetailsLink" checked aria-label="Letterboxd details tab link">
+                <span class="track"></span>
+              </label>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- IMDb -->
+      <section class="card" id="imdb">
+        <div class="card-head">
+          <span class="dest-dot imdb"></span>
+          <h3>IMDb</h3>
+          <span class="pill muted">imdb.com/title</span>
+        </div>
+        <div class="card-body">
+          <div class="setting-list">
+            <div class="setting-row">
+              <div class="setting-text">
+                <div class="setting-title">Title page buttons</div>
+                <div class="setting-desc">A row of destination buttons under the title's rating bar.</div>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="showImdbButton" data-key="showImdbButton" checked aria-label="IMDb title page buttons">
+                <span class="track"></span>
+              </label>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <h2 class="group-heading">More</h2>
+
+      <!-- General -->
+      <section class="card" id="general">
+        <div class="card-head">
+          <h3>General</h3>
+        </div>
+        <div class="card-body">
+          <div class="setting-list">
+            <div class="setting-row">
+              <div class="setting-text">
+                <div class="setting-title">Open links in a new tab</div>
+                <div class="setting-desc">Keep the film page open when you hop to a destination.</div>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="openInNewTab" data-key="openInNewTab" checked aria-label="Open links in a new tab">
+                <span class="track"></span>
+              </label>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Data -->
+      <section class="card" id="data">
+        <div class="card-head">
+          <h3>Data</h3>
+        </div>
+        <div class="card-body">
+          <div class="setting-list">
+            <div class="setting-row">
+              <div class="setting-text">
+                <div class="setting-title">Cached film links</div>
+                <div class="setting-desc" id="cacheCount">Checking…</div>
+              </div>
+              <button id="clearCacheBtn" class="btn secondary">Clear cache</button>
+            </div>
+          </div>
+          <div class="note" id="dataNote"></div>
+          <p class="hint">
+            Film links are remembered for 7 days so pages load without re-asking Plex. Clear the cache if a film
+            points somewhere stale, or after changing servers. Everything ReelHop stores stays in this browser.
+          </p>
+        </div>
+      </section>
+
+      <p class="footer">
+        ReelHop is unofficial and not affiliated with Letterboxd, IMDb, Plex, or Radarr.
+      </p>
+    </main>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script src="options.js"></script>
+</body>
+</html>

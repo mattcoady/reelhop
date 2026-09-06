@@ -758,7 +758,7 @@
       e.preventDefault();
       e.stopPropagation();
       const href = btn.href;
-      chrome.runtime.sendMessage({ action: 'openPopup' })
+      chrome.runtime.sendMessage({ action: 'openOptions', section: 'radarr' })
         .then((res) => { if (!(res && res.ok) && href && !href.endsWith('#')) window.open(href, '_blank', 'noopener'); })
         .catch(() => { if (href && !href.endsWith('#')) window.open(href, '_blank', 'noopener'); });
     } else if (status === 'checking' || status === 'adding') {

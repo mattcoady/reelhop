@@ -34,7 +34,7 @@ Until ReelHop is on the Chrome Web Store, load it unpacked:
 2. Open the extensions page — `chrome://extensions` (Chrome) or `brave://extensions` (Brave).
 3. Toggle **Developer mode** (top right).
 4. Click **Load unpacked** and select the cloned directory.
-5. Click the ReelHop icon in the toolbar to open settings.
+5. Click the ReelHop icon in the toolbar to open the settings page (it opens in its own tab).
 
 ---
 
@@ -44,52 +44,53 @@ ReelHop works out of the box with Plex search links. Everything below is optiona
 
 ### Plex (deep links to your server / Discover)
 
-**Sign in with Plex** — click the button in the popup. A small Plex window opens; sign in there (two-factor included) and it closes itself when done. The popup then shows your account name and servers. This uses Plex's PIN flow: ReelHop never sees your password, only the resulting token, which stays on this device. Use **Sign out** in the popup to remove it.
+**Sign in with Plex** — click the button on the settings page. A small Plex window opens; sign in there (two-factor included) and it closes itself when done. The settings page then shows your account name and servers. This uses Plex's PIN flow: ReelHop never sees your password, only the resulting token, which stays on this device. Use **Sign out** on the settings page to remove it.
 
 **Paste a token instead** — if you'd rather not sign in:
 
 1. Sign in at [app.plex.tv](https://app.plex.tv) and open any item in your library.
 2. `...` (More) menu → **Get Info** → **View XML**.
 3. Copy the `X-Plex-Token=...` value from the end of the URL in the address bar.
-4. In the popup, click **Paste a token instead**, paste it, and hit **Save Settings**.
-
-Use **Test Token & Server** to verify a pasted token — it shows your account name and detected servers.
+4. On the settings page, click **Paste a token instead**, paste it, and press **Use this token**. ReelHop checks it with Plex, shows your account name and servers, and keeps it.
 
 **Note on server connections**: ReelHop only contacts your Plex servers over their secure `*.plex.direct` HTTPS addresses (Plex's default for all signed-in servers). Servers reachable only via plain-HTTP LAN addresses won't be found.
 
 ### Radarr
 
-1. In the popup, tick **Enable** on the Radarr card.
-2. Enter your Radarr URL as you'd type it in the browser, e.g. `http://192.168.1.10:7878` or `https://radarr.example.com/radarr` (include the URL base if you have one).
+1. On the settings page, turn on the **Radarr** switch.
+2. Enter your Radarr address as you'd type it in the browser, e.g. `http://192.168.1.10:7878` or `https://radarr.example.com/radarr` (include the URL base if you have one).
 3. Paste your API key from Radarr → **Settings → General → Security**.
-4. Click **Connect & Load Options**. Chrome will ask you to allow ReelHop to access that one address — accept. ReelHop then verifies the key and loads your **quality profiles** and **root folders**.
-5. Pick the profile and root folder new movies should use, set **Minimum Availability**, and **Save Settings**.
+4. Click **Connect**. Chrome will ask you to allow ReelHop to access that one address — accept. ReelHop then verifies the key, loads your **quality profiles** and **root folders**, and picks the first of each.
+5. Change the profile, root folder or **Minimum availability** if you like. Every change saves as you make it.
 
 Without a profile and root folder chosen, the on-page button still works — it opens Radarr's own add page pre-filled with the movie instead of adding directly.
 
 ### Settings
 
+The settings page opens in a tab (toolbar icon, or the extension's **Details → Extension options**). There is no Save button: each change is stored the moment you make it.
+
 | Setting | Default | What it does |
 |---|---|---|
 | Sign in with Plex | signed out | PIN-based sign-in on plex.tv; enables server / Discover deep-linking |
-| Plex Token (paste) | empty | Manual alternative to signing in |
-| Link Destination Priority | Smart | Server first → Discover → Search, or pin one destination |
-| Radarr: Enable | off | Shows a Radarr button on movie pages |
-| Radarr: URL / API key | empty | Where Radarr lives and how to authenticate |
-| Radarr: Quality Profile / Root Folder | first available | Used for one-click adds |
-| Radarr: Minimum Availability | Released | Passed through to Radarr on add |
+| Plex token (paste) | empty | Manual alternative to signing in, verified before it is kept |
+| Link destination | Smart | Server first → Discover → Search, or pin one destination |
+| Radarr | off | Shows a Radarr button on movie pages |
+| Radarr: address / API key | empty | Where Radarr lives and how to authenticate |
+| Radarr: Quality profile / Root folder | first available | Used for one-click adds |
+| Radarr: Minimum availability | Released | Passed through to Radarr on add |
 | Radarr: Search on add | on | Tells Radarr to start looking as soon as the movie is added |
-| Display Locations | all on | Choose which placements to show, per site |
-| Open in new tab | on | Open destination links in a new tab |
+| Letterboxd / IMDb placements | all on | Choose which buttons and links to show, per site |
+| Open links in a new tab | on | Open destination links in a new tab |
+| Data: Clear cache | — | Drops the 7-day film-link cache and the cached server list |
 
 ---
 
 ## How it works
 
 - A content script reads the film's title, year, IMDb / TMDb IDs and media type from the page and injects the buttons. Each destination is resolved independently and in parallel, so a slow or offline Radarr never delays the Plex link.
-- All network calls happen in the background service worker. It has permission for Plex's own domains (`plex.tv`, `discover.provider.plex.tv`, `*.plex.direct`) out of the box; access to your Radarr host is an **optional permission** that Chrome grants only when you save a Radarr URL in the popup, and only for that host.
+- All network calls happen in the background service worker. It has permission for Plex's own domains (`plex.tv`, `discover.provider.plex.tv`, `*.plex.direct`) out of the box; access to your Radarr host is an **optional permission** that Chrome grants only when you press **Connect** on the settings page, and only for that host.
 - **Sign in with Plex** is Plex's PIN flow: the worker asks `plex.tv` for a PIN, opens Plex's hosted sign-in page in a popup window with that PIN, and polls the PIN until Plex attaches a token. Changing the token (sign-in, paste, sign-out) drops the cached server list and film links so pages re-resolve for the new account.
-- **Plex**: with a token, it searches your servers' libraries (`/hubs/search`) and Plex Discover across both movie and TV-show types, matching by IMDb ID first, then normalized title + year (±1). Results are cached locally for 7 days (clearable from the popup).
+- **Plex**: with a token, it searches your servers' libraries (`/hubs/search`) and Plex Discover across both movie and TV-show types, matching by IMDb ID first, then normalized title + year (±1). Results are cached locally for 7 days (clearable from the settings page).
 - **Radarr**: it looks the movie up (`/api/v3/movie/lookup` by IMDb ID, then TMDB ID, then title), confirms whether it's already in your library (`/api/v3/movie?tmdbId=`), and on click POSTs the lookup result back to `/api/v3/movie` with your profile, root folder and availability. The API key is sent only as the `X-Api-Key` header, only to your configured URL.
 
 ---
@@ -114,7 +115,7 @@ manifest.json     MV3 manifest
 background.js     Service worker — all Plex and Radarr API calls
 content.js        Per-site DOM scraping + destination buttons
 content.css       Injected button styling
-popup.html/js/css Settings popup
+options.html/js/css Settings page (opens in a tab; no popup)
 generate_icons.py Regenerates the icon PNGs
 test/             Node tests for the background worker (fake Plex + Radarr)
 ```
@@ -143,12 +144,12 @@ Injected top-level nodes must carry the `reelhop-injected` class (so the engine 
 
 ### Adding a new destination
 
-A destination is (a) a section in `background.js` exposing `<name>Resolve` / `<name>Test` (and any actions, like `radarrAdd`) over `chrome.runtime.onMessage`, (b) a state + button painter in `content.js` alongside `radarrState` / `radarrView`, and (c) a card in the popup. If it lives at a user-supplied URL, request its origin with `chrome.permissions.request` from the popup the way the Radarr card does — don't widen `host_permissions`.
+A destination is (a) a section in `background.js` exposing `<name>Resolve` / `<name>Test` (and any actions, like `radarrAdd`) over `chrome.runtime.onMessage`, (b) a state + button painter in `content.js` alongside `radarrState` / `radarrView`, and (c) a card in `options.html` with its controls wired in `options.js` (simple controls just declare a `data-key` and auto-save). If it lives at a user-supplied URL, request its origin with `chrome.permissions.request` from the settings page the way the Radarr card does — don't widen `host_permissions`.
 
 ### Packaging for the Chrome Web Store
 
 ```bash
-zip -r reelhop.zip manifest.json background.js content.js content.css popup.html popup.js popup.css icons
+zip -r reelhop.zip manifest.json background.js content.js content.css options.html options.js options.css icons
 ```
 
 Store listing reminders:
