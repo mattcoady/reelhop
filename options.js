@@ -41,6 +41,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const showDetailsLinkCheckbox = $('showDetailsLink');
   const showPosterBadgesCheckbox = $('showPosterBadges');
   const showPosterFilterCheckbox = $('showPosterFilter');
+  const showPosterAddCheckbox = $('showPosterAdd');
   const showImdbButtonCheckbox = $('showImdbButton');
 
   // Data
@@ -670,6 +671,7 @@ document.addEventListener('DOMContentLoaded', () => {
     'showDetailsLink',
     'showImdbButton',
     'showPosterBadges',
+    'showPosterAdd',
     'showPosterFilter',
     'radarrEnabled',
     'radarrUrl',
@@ -687,6 +689,7 @@ document.addEventListener('DOMContentLoaded', () => {
     showWatchPanelCheckbox.checked = items.showWatchPanel !== false;
     showDetailsLinkCheckbox.checked = items.showDetailsLink !== false;
     showPosterBadgesCheckbox.checked = items.showPosterBadges !== false;
+    showPosterAddCheckbox.checked = items.showPosterAdd !== false;
     showPosterFilterCheckbox.checked = items.showPosterFilter !== false;
     showImdbButtonCheckbox.checked = items.showImdbButton !== false;
 

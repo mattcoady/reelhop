@@ -73,7 +73,7 @@ const routedFetch = (url, opts) => {
 
 const ctx = { chrome, fetch: routedFetch, AbortController, setTimeout, clearTimeout, console, crypto, URL, URLSearchParams, encodeURIComponent, JSON, Math, Promise, Date };
 vm.createContext(ctx);
-vm.runInContext(src + '\n;globalThis.__api = { radarrResolve, radarrAdd, radarrTest, plexResolve, normalizeRadarrUrl, radarrOriginPattern, plexSignInStart, plexSignInStatus, plexSignInCancel, plexSignOut, getPlexHeaders, radarrHasFile, plexLibraryMatch, getLibraryIndex };', ctx);
+vm.runInContext(src + '\n;globalThis.__api = { radarrResolve, radarrAdd, radarrTest, plexResolve, normalizeRadarrUrl, radarrOriginPattern, plexSignInStart, plexSignInStatus, plexSignInCancel, plexSignOut, getPlexHeaders, radarrHasFile, plexLibraryMatch, getLibraryIndex, radarrLibraryMatch };', ctx);
 const api = ctx.__api;
 
 // ---- tiny assert -----------------------------------------------------------
@@ -173,6 +173,7 @@ const library = new Map([[278, { id: 42, ...catalog['tt0111161'], movieFileId: 1
 let lastPost = null;
 let appName = 'Radarr';
 let postCount = 0;
+const radarr = { listCalls: 0 };
 const radarrServer = http.createServer((req, res) => {
   const u = new URL(req.url, 'http://x');
   const send = (code, body) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
@@ -190,6 +191,10 @@ const radarrServer = http.createServer((req, res) => {
     return send(200, results.map(m => ({ ...m, id: 0 })));
   }
   if (u.pathname === '/api/v3/movie' && req.method === 'GET') {
+    if (!u.searchParams.has('tmdbId')) {
+      radarr.listCalls++;
+      return send(200, [...library.values()]);
+    }
     const m = library.get(Number(u.searchParams.get('tmdbId')));
     return send(200, m ? [m] : []);
   }
@@ -433,6 +438,64 @@ const radarrServer = http.createServer((req, res) => {
   pms.sectionCalls = 0;
   const both = await Promise.all([ask([['inception', 'Inception', '2010']]), ask([['severance', 'Severance', '2022']])]);
   check('concurrent tabs share one build', pms.sectionCalls === 1 && both[0].ok && both[1].ok, pms);
+
+  console.log('Radarr library index (poster + buttons)');
+  const radarrAsk = (films) => api.radarrLibraryMatch(films.map(f => ({ key: f[0], title: f[1], year: f[2] })));
+  // Changing any radarr* setting drops the index, which is how these cases
+  // start from a clean slate.
+  const resetRadarrIndex = async () => { await chrome.storage.local.set({ radarrUrl: base }); await sleep(5); };
+
+  local = {};
+  r = await radarrAsk([['inception', 'Inception', '2010']]);
+  check('radarr off -> disabled', r.ok === false && r.reason === 'disabled', r);
+
+  cfg({ radarrEnabled: true, radarrUrl: base, radarrApiKey: 'secret', radarrQualityProfileId: 4, radarrRootFolder: '/movies' });
+  library.clear();
+  library.set(278, { id: 42, ...catalog['tt0111161'], movieFileId: 12, movieFile: { id: 12 }, monitored: true });
+  library.set(27205, { id: 43, ...catalog['tt1375666'], movieFileId: 0, movieFile: null, monitored: true });
+  await resetRadarrIndex();
+  radarr.listCalls = 0;
+  r = await radarrAsk([
+    ['the-shawshank-redemption', 'The Shawshank Redemption', '1994'],
+    ['inception', 'Inception', '2010'],
+    ['the-holdovers', 'The Holdovers', '2023']
+  ]);
+  check('lists the library once for the whole batch', radarr.listCalls === 1, radarr);
+  check('a downloaded movie reports its file', r.ok && r.matches['the-shawshank-redemption'] &&
+    r.matches['the-shawshank-redemption'].hasFile === true, r.matches);
+  check('a wanted movie reports no file', r.matches.inception && r.matches.inception.hasFile === false &&
+    r.matches.inception.monitored === true, r.matches);
+  check('a movie link points at the Radarr page', (r.matches.inception.url || '').includes('/movie/27205'), r.matches);
+  check('a film that is not in Radarr is absent', !('the-holdovers' in r.matches), r.matches);
+  check('reports whether a one-click add is possible', r.canAdd === true && r.addUrlBase.includes('/add/new?term='), r);
+
+  radarr.listCalls = 0;
+  r = await radarrAsk([['inception', 'Inception', '2010']]);
+  check('second batch reuses the index', radarr.listCalls === 0, radarr);
+
+  cfg({ radarrEnabled: true, radarrUrl: base, radarrApiKey: 'secret', radarrQualityProfileId: 0, radarrRootFolder: '' });
+  await resetRadarrIndex();
+  r = await radarrAsk([['inception', 'Inception', '2010']]);
+  check('no profile or root folder -> canAdd false', r.ok && r.canAdd === false, r);
+
+  cfg({ radarrEnabled: true, radarrUrl: base, radarrApiKey: 'nope', radarrQualityProfileId: 4, radarrRootFolder: '/movies' });
+  await resetRadarrIndex();
+  r = await radarrAsk([['inception', 'Inception', '2010']]);
+  check('bad api key -> unauthorized, nothing cached', r.ok === false && r.reason === 'unauthorized' && !session.radarrIndex, r);
+
+  // Adding from a poster: title and year only, no IMDb or TMDB id.
+  cfg({ radarrEnabled: true, radarrUrl: base, radarrApiKey: 'secret', radarrQualityProfileId: 4, radarrRootFolder: '/movies' });
+  library.delete(27205);
+  await resetRadarrIndex();
+  await radarrAsk([['inception', 'Inception', '2010']]);
+  check('index is stored for the session', !!session.radarrIndex, Object.keys(session));
+  postCount = 0;
+  r = await api.radarrAdd({ title: 'Inception', year: '2010' });
+  check('add by title alone -> in_library', r.status === 'in_library' && r.justAdded === true && postCount === 1, r);
+  check('adding drops the stale index', !session.radarrIndex, Object.keys(session));
+  radarr.listCalls = 0;
+  r = await radarrAsk([['inception', 'Inception', '2010']]);
+  check('the rebuilt index sees the new movie', radarr.listCalls === 1 && !!r.matches.inception, r.matches);
 
   console.log('settings page');
   const route = (msg) => new Promise((resolve) => listeners.message[0](msg, {}, resolve));

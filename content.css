@@ -301,14 +301,20 @@
   height: 12px;
 }
 
-/* ---------- Letterboxd: poster chips (grids, lists, watchlist) ---------- */
-/* Sits in the poster's top-right corner, above Letterboxd's hover frame.
+/* ---------- Letterboxd: poster marks (grids, lists, watchlist) ---------- */
+/* A stack in the poster's top-right corner, above Letterboxd's hover frame.
    The poster box (.film-poster) is position: relative on every grid size. */
-.reelhop-poster-badge {
+.reelhop-poster-marks {
   position: absolute;
   top: 4px;
   right: 4px;
   z-index: 3;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.reelhop-poster-marks > a {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -316,50 +322,131 @@
   height: 20px;
   border-radius: 6px;
   background: rgba(20, 24, 28, 0.9);
-  box-shadow: 0 0 0 1.5px rgba(0, 224, 84, 0.85), 0 1px 4px rgba(0, 0, 0, 0.55);
   text-decoration: none !important;
   cursor: pointer;
-  transition: transform 0.15s ease-in-out, box-shadow 0.15s ease-in-out;
+  transition: transform 0.15s ease-in-out, box-shadow 0.15s ease-in-out, opacity 0.15s ease-in-out;
 }
 
-.reelhop-poster-badge svg {
+.reelhop-poster-marks > a:hover {
+  transform: scale(1.12);
+}
+
+.reelhop-poster-marks svg {
   width: 12px;
   height: 12px;
   flex-shrink: 0;
 }
 
+/* The Plex chip: this film is on your server. */
+.reelhop-poster-badge {
+  box-shadow: 0 0 0 1.5px rgba(0, 224, 84, 0.85), 0 1px 4px rgba(0, 0, 0, 0.55);
+}
+
 .reelhop-poster-badge:hover {
-  transform: scale(1.12);
   box-shadow: 0 0 0 1.5px #00e054, 0 0 10px rgba(229, 160, 13, 0.55);
 }
 
+/* The Radarr "+": this film isn't in Radarr yet. It is an action rather than
+   information, so it rests quietly and steps forward on hover or focus. */
+.reelhop-poster-add {
+  box-shadow: 0 0 0 1.5px rgba(255, 194, 48, 0.8), 0 1px 4px rgba(0, 0, 0, 0.55);
+  opacity: 0.4;
+}
+
+.film-poster:hover .reelhop-poster-add,
+.poster:hover .reelhop-poster-add,
+.reelhop-poster-add:focus-visible,
+.reelhop-poster-add.busy,
+.reelhop-poster-add.ok,
+.reelhop-poster-add.err {
+  opacity: 1;
+}
+
+.reelhop-poster-add:focus-visible {
+  outline: 2px solid #ffc230;
+  outline-offset: 1px;
+}
+
+.reelhop-poster-glyph {
+  color: #ffc230;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1;
+  /* The glyph is a bare character, so nudge it onto the optical centre. */
+  margin-top: -1px;
+}
+
+.reelhop-poster-add.busy {
+  animation: reelhop-pulse 1s ease-in-out infinite;
+  cursor: default;
+}
+
+.reelhop-poster-add.ok {
+  box-shadow: 0 0 0 1.5px rgba(0, 224, 84, 0.85), 0 1px 4px rgba(0, 0, 0, 0.55);
+}
+
+.reelhop-poster-add.ok .reelhop-poster-glyph {
+  color: #00e054;
+}
+
+.reelhop-poster-add.err {
+  box-shadow: 0 0 0 1.5px rgba(255, 90, 90, 0.85), 0 1px 4px rgba(0, 0, 0, 0.55);
+}
+
+.reelhop-poster-add.err .reelhop-poster-glyph {
+  color: #ff7676;
+}
+
 /* Small posters (70px browse grids) */
-.reelhop-poster-badge.-sm {
+.reelhop-poster-marks.-sm {
   top: 3px;
   right: 3px;
+  gap: 2px;
+}
+
+.reelhop-poster-marks.-sm > a {
   width: 16px;
   height: 16px;
   border-radius: 4px;
-  box-shadow: 0 0 0 1px rgba(0, 224, 84, 0.85), 0 1px 3px rgba(0, 0, 0, 0.55);
 }
 
-.reelhop-poster-badge.-sm svg {
+.reelhop-poster-marks.-sm svg {
   width: 10px;
   height: 10px;
 }
 
+.reelhop-poster-marks.-sm .reelhop-poster-glyph {
+  font-size: 12px;
+}
+
+.reelhop-poster-marks.-sm .reelhop-poster-badge {
+  box-shadow: 0 0 0 1px rgba(0, 224, 84, 0.85), 0 1px 3px rgba(0, 0, 0, 0.55);
+}
+
+.reelhop-poster-marks.-sm .reelhop-poster-add {
+  box-shadow: 0 0 0 1px rgba(255, 194, 48, 0.8), 0 1px 3px rgba(0, 0, 0, 0.55);
+}
+
 /* Large posters (230px lists and "size/large" grids) */
-.reelhop-poster-badge.-lg {
+.reelhop-poster-marks.-lg {
   top: 6px;
   right: 6px;
+  gap: 4px;
+}
+
+.reelhop-poster-marks.-lg > a {
   width: 26px;
   height: 26px;
   border-radius: 7px;
 }
 
-.reelhop-poster-badge.-lg svg {
+.reelhop-poster-marks.-lg svg {
   width: 16px;
   height: 16px;
+}
+
+.reelhop-poster-marks.-lg .reelhop-poster-glyph {
+  font-size: 19px;
 }
 
 /* ---------- Letterboxd: availability filter bar above poster grids ---------- */

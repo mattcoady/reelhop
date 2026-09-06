@@ -432,6 +432,7 @@ async function getLibraryIndex(token) {
 // Best library entry for one poster: exact normalized title (or original
 // title), year within ±1, preferring the exact year and a title over an
 // original-title hit. With no year to go on, only an unambiguous title counts.
+// Shared by the Plex and Radarr indexes; entries only need { t, o, y }.
 function matchLibraryEntry(index, film) {
   const title = normalize(film.title || '');
   if (!title) return null;
@@ -901,6 +902,126 @@ async function radarrLookup(movie, cfg) {
   return { status: 'missing', movie: match };
 }
 
+// ---------------------------------------------------------------------------
+// Radarr library index
+//
+// Poster grids ask about dozens of films at once. Radarr has no batch lookup,
+// so the worker pulls the library once (GET /movie), trims it to what
+// matching needs, and answers batches from that. Short-lived on purpose: the
+// user adds movies through this extension, and Radarr grabs files on its own.
+// ---------------------------------------------------------------------------
+
+const RADARR_INDEX_TTL = 5 * 60 * 1000;
+const RADARR_LIST_TIMEOUT = 20000; // a big library is a few MB over the LAN
+
+let radarrIndexMemo = null;
+let radarrIndexPromise = null;
+
+function radarrEntryFrom(movie) {
+  const t = normalize(movie.title || '');
+  if (!t) return null;
+  const o = normalize(movie.originalTitle || '');
+  const entry = {
+    t,
+    y: parseInt(movie.year, 10) || 0,
+    id: movie.id || 0,
+    slug: movie.titleSlug || String(movie.tmdbId || ''),
+    file: radarrHasFile(movie),
+    mon: !!movie.monitored
+  };
+  if (o && o !== t) entry.o = o;
+  return entry;
+}
+
+function dropRadarrIndex() {
+  radarrIndexMemo = null;
+  return chrome.storage.session.remove('radarrIndex').catch(() => {});
+}
+
+// Radarr's address, key or add settings changed: whatever we hold describes a
+// different Radarr, or a different way of adding to it.
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && Object.keys(changes).some(k => k.startsWith('radarr'))) dropRadarrIndex();
+});
+
+async function getRadarrIndex(cfg) {
+  const fresh = (idx) => idx && idx.url === cfg.url && Date.now() - idx.timestamp < RADARR_INDEX_TTL;
+  if (fresh(radarrIndexMemo)) return radarrIndexMemo;
+
+  if (!radarrIndexMemo) {
+    try {
+      const { radarrIndex } = await chrome.storage.session.get('radarrIndex');
+      if (fresh(radarrIndex)) {
+        radarrIndexMemo = { ...radarrIndex, byTitle: indexByTitle(radarrIndex.entries) };
+        return radarrIndexMemo;
+      }
+    } catch (e) {
+      // storage.session unavailable; rebuild below
+    }
+  }
+
+  if (!radarrIndexPromise) {
+    radarrIndexPromise = (async () => {
+      const res = await radarrFetch(cfg, '/movie', {}, RADARR_LIST_TIMEOUT);
+      if (!res.ok) throw new RadarrHttpError(res.status);
+      const data = await res.json();
+      const entries = [];
+      for (const movie of Array.isArray(data) ? data : []) {
+        const entry = radarrEntryFrom(movie);
+        if (entry) entries.push(entry);
+      }
+      const index = { timestamp: Date.now(), url: cfg.url, entries };
+      radarrIndexMemo = { ...index, byTitle: indexByTitle(entries) };
+      try {
+        await chrome.storage.session.set({ radarrIndex: index });
+      } catch (e) {
+        console.warn('[ReelHop] Could not store the Radarr index (too large?):', e);
+      }
+      return radarrIndexMemo;
+    })().finally(() => { radarrIndexPromise = null; });
+  }
+  return radarrIndexPromise;
+}
+
+// films: [{ key, title, year }] -> what each one is in Radarr. Keys absent
+// from `matches` are not in the library, which is what the poster "+" is for.
+async function radarrLibraryMatch(films) {
+  const cfg = await getRadarrConfig();
+  if (!cfg.enabled) return { ok: false, reason: 'disabled' };
+  if (!cfg.apiKey) return { ok: false, reason: 'unconfigured', url: cfg.url };
+  if (!(await hasRadarrPermission(cfg.url))) return { ok: false, reason: 'permission', url: cfg.url };
+
+  let index;
+  try {
+    index = await getRadarrIndex(cfg);
+  } catch (e) {
+    const failure = radarrFailure(cfg, e);
+    return { ok: false, reason: failure.status, url: cfg.url, message: failure.message };
+  }
+
+  const matches = {};
+  for (const film of Array.isArray(films) ? films : []) {
+    if (!film || !film.key) continue;
+    const entry = matchLibraryEntry(index, film);
+    if (!entry) continue;
+    matches[film.key] = {
+      status: 'in_library',
+      hasFile: entry.file,
+      monitored: entry.mon,
+      url: entry.slug ? `${cfg.url}/movie/${encodeURIComponent(entry.slug)}` : cfg.url
+    };
+  }
+  return {
+    ok: true,
+    matches,
+    indexed: index.entries.length,
+    // Without a profile and root folder the "+" can only open Radarr's own
+    // add page; the content script uses this to decide.
+    canAdd: cfg.qualityProfileId > 0 && !!cfg.rootFolder,
+    addUrlBase: `${cfg.url}/add/new?term=`
+  };
+}
+
 async function radarrResolve(movie) {
   const cfg = await getRadarrConfig();
   if (!cfg.enabled) return radarrResult('disabled');
@@ -975,6 +1096,7 @@ async function radarrAdd(movie) {
     if (!res.ok) throw new RadarrHttpError(res.status);
 
     const added = await res.json();
+    await dropRadarrIndex(); // the library just changed
     return radarrResult('in_library', added, { url: radarrMovieUrl(cfg, added), justAdded: true });
   } catch (e) {
     return radarrFailure(cfg, e);
@@ -1071,6 +1193,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         case 'plexSignOut':
           sendResponse(await plexSignOut());
+          break;
+        case 'radarrLibraryMatch':
+          // Poster "+" buttons: many films at once, matched against the index.
+          sendResponse(await radarrLibraryMatch(msg.films));
           break;
         case 'radarrResolve':
           sendResponse(await radarrResolve(msg.movie));

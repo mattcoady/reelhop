@@ -537,6 +537,7 @@
         'showDetailsLink',
         'showImdbButton',
         'showPosterBadges',
+        'showPosterAdd',
         'showPosterFilter',
         'posterFilter',
         'radarrEnabled',
@@ -550,6 +551,7 @@
           showDetailsLink: items.showDetailsLink !== false,
           showImdbButton: items.showImdbButton !== false,
           showPosterBadges: items.showPosterBadges !== false,
+          showPosterAdd: items.showPosterAdd !== false,
           showPosterFilter: items.showPosterFilter !== false,
           posterFilter: FILTER_MODES.includes(items.posterFilter) ? items.posterFilter : 'all',
           radarrEnabled: items.radarrEnabled === true,
@@ -590,37 +592,53 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Poster badges (Letterboxd only)
+  // Poster marks (Letterboxd only)
   //
   // Letterboxd draws every poster — browse grids, lists, the watchlist, a film
   // page's "similar films" — with one React component that carries the film's
-  // slug and "Title (Year)". We collect the posters on the page, ask the
-  // worker about all of them in one plexLibraryMatch message, and give the
-  // ones on the user's server a small Plex chip that deep-links to the item.
+  // slug and "Title (Year)". We collect the posters on the page and ask the
+  // worker about all of them at once: plexLibraryMatch for what is on the
+  // user's server, radarrLibraryMatch for what is already in Radarr. Each
+  // poster then gets up to two small marks stacked in its corner — a Plex chip
+  // that deep-links to the item, and a "+" that adds the film to Radarr.
   // Answers are kept for the page's lifetime so re-renders repaint for free.
   // ---------------------------------------------------------------------------
 
   // Letterboxd renders every poster with this one component; the link check
   // keeps us to films if it is ever reused for people, lists or other items.
   const POSTER_SELECTOR = '.react-component[data-item-slug][data-item-link^="/film/"]';
-  const POSTER_BADGE_CLASS = 'reelhop-poster-badge';
+  const POSTER_MARKS_CLASS = 'reelhop-poster-marks';
+  const POSTER_BADGE_CLASS = 'reelhop-poster-badge'; // the Plex chip
+  const POSTER_ADD_CLASS = 'reelhop-poster-add';     // the Radarr "+"
   const POSTER_MIN_WIDTH = 60;   // thumbnails are too small for a chip
   const POSTER_MAX_WIDTH = 400;  // the film page's own poster already has buttons
-  // Settings that invalidate what we know (re-ask Plex) vs. ones that only
+  // Settings that invalidate what we know (ask again) vs. ones that only
   // change how it is drawn (repaint from memory).
-  const POSTER_RESET_KEYS = ['plexToken', 'showPosterBadges'];
+  const POSTER_RESET_KEYS = ['plexToken', 'showPosterBadges', 'showPosterAdd',
+                             'radarrEnabled', 'radarrUrl', 'radarrApiKey'];
   const POSTER_REFRESH_KEYS = ['openInNewTab', 'showPosterFilter', 'posterFilter'];
   const FILTER_BAR_ID = 'reelhop-poster-filter';
   const FILTER_HIDDEN_CLASS = 'reelhop-filtered-out';
   const FILTER_MIN_POSTERS = 8; // below this a grid is a preview strip, not a page of films
-  const posterResults = new Map(); // slug -> match | null
-  const posterPending = new Set(); // slugs with a lookup in flight
+  const posterResults = new Map(); // slug -> Plex match | null
+  const radarrPoster = new Map();  // slug -> { status, url, ... } | null (nothing to show)
+  const posterKnown = new Set();   // slugs every enabled destination has answered for
+  const posterPending = new Set(); // slugs queued or in flight
   let posterQueue = new Map();     // slug -> { title, year } waiting to be sent
+  let radarrCanAdd = false;        // profile + root folder are set, so "+" adds in place
   let posterFlushTimer = null;
   let posterScanTimer = null;
 
   function isLetterboxd() {
     return location.hostname.endsWith('letterboxd.com');
+  }
+
+  // Which destinations want to mark posters right now.
+  function posterWants(settings) {
+    return {
+      plex: settings.showPosterBadges && !!settings.plexToken,
+      radarr: settings.showPosterAdd && settings.radarrEnabled && !!settings.radarrUrl
+    };
   }
 
   function posterWidth(el) {
@@ -643,40 +661,114 @@
     return '';
   }
 
-  // Add, update or remove the chip on one poster to reflect `match`. Letterboxd
-  // mutates these grids constantly (lazy images, hover cards), and every
-  // mutation costs us a rescan, so this returns early when the poster is
-  // already in the state we want rather than rewriting attributes.
-  function paintPoster(el, match, settings) {
+  // The stack of marks in the poster's corner, created on first use.
+  function posterMarks(el, create) {
     const host = el.querySelector('.film-poster, .poster') || el;
-    let badge = host.querySelector(`.${POSTER_BADGE_CLASS}`);
-    const want = match ? 'server' : 'none';
+    let marks = host.querySelector(`.${POSTER_MARKS_CLASS}`);
+    if (!marks && create) {
+      marks = document.createElement('div');
+      marks.className = `${POSTER_MARKS_CLASS} ${INJECTED_CLASS} ${posterSizeClass(posterWidth(el))}`.trim();
+      // Keep clicks off Letterboxd's own poster handlers (frame link, menu).
+      marks.addEventListener('click', (e) => e.stopPropagation());
+      host.appendChild(marks);
+    }
+    return marks;
+  }
+
+  function dropMarksIfEmpty(el) {
+    const marks = posterMarks(el, false);
+    if (marks && !marks.firstChild) marks.remove();
+  }
+
+  // What the Radarr "+" says in each state. Only films that aren't in Radarr
+  // get one, so the resting state is always the offer to add.
+  function posterAddView(state) {
+    switch (state && state.status) {
+      case 'adding': return { icon: '…', label: 'Adding to Radarr…', tone: 'busy' };
+      case 'added': return { icon: '✓', label: 'Added to Radarr', tone: 'ok' };
+      case 'error': return { icon: '!', label: state.message || 'Radarr could not add this', tone: 'err' };
+      default: return {
+        icon: '+',
+        label: radarrCanAdd ? 'Add to Radarr' : 'Open this in Radarr to add it',
+        tone: 'action'
+      };
+    }
+  }
+
+  // Add, update or remove one poster's marks. Letterboxd mutates these grids
+  // constantly (lazy images, hover cards) and every mutation costs a rescan,
+  // so this returns early when the poster already looks the way we want.
+  function paintPoster(el, view, settings) {
+    const plex = view.plex || null;
+    const add = view.add || null;
     const wantTarget = settings.openInNewTab ? '_blank' : null;
-    if (el.dataset.reelhopPoster === want &&
-        (!match || (badge && badge.getAttribute('href') === match.url &&
-                    badge.getAttribute('target') === wantTarget))) {
-      return;
+    const signature = [
+      plex ? `plex:${plex.url}` : 'plex:-',
+      add ? `add:${add.status || 'add'}:${add.url || ''}` : 'add:-',
+      `t:${wantTarget || ''}`
+    ].join('|');
+    if (el.dataset.reelhopPoster === signature) return;
+
+    const marks = posterMarks(el, !!(plex || add));
+
+    // --- Plex chip
+    let badge = marks && marks.querySelector(`.${POSTER_BADGE_CLASS}`);
+    if (!plex) {
+      if (badge) badge.remove();
+    } else {
+      if (!badge) {
+        badge = document.createElement('a');
+        badge.className = POSTER_BADGE_CLASS;
+        badge.appendChild(createPlexIcon());
+        marks.appendChild(badge);
+      }
+      badge.href = plex.url;
+      badge.title = plex.serverName ? `On Plex (${plex.serverName})` : 'On Plex';
+      badge.setAttribute('aria-label', badge.title);
+      applyLinkTarget(badge, settings);
     }
 
-    if (!match) {
-      if (badge) badge.remove();
-      el.dataset.reelhopPoster = 'none';
-      return;
+    // --- Radarr "+"
+    let plus = marks && marks.querySelector(`.${POSTER_ADD_CLASS}`);
+    if (!add) {
+      if (plus) plus.remove();
+    } else {
+      const v = posterAddView(add);
+      if (!plus) {
+        plus = document.createElement('a');
+        plus.className = POSTER_ADD_CLASS;
+        const glyph = document.createElement('span');
+        glyph.className = 'reelhop-poster-glyph';
+        plus.appendChild(glyph);
+        marks.appendChild(plus);
+      }
+      plus.dataset.status = add.status || 'add';
+      plus.className = `${POSTER_ADD_CLASS} ${v.tone}`;
+      plus.querySelector('.reelhop-poster-glyph').textContent = v.icon;
+      plus.title = v.label;
+      plus.setAttribute('aria-label', v.label);
+      if (add.url) {
+        plus.href = add.url;
+        applyLinkTarget(plus, settings);
+      } else {
+        plus.removeAttribute('href');
+      }
     }
-    if (!badge) {
-      badge = document.createElement('a');
-      badge.className = `${POSTER_BADGE_CLASS} ${INJECTED_CLASS} ${posterSizeClass(posterWidth(el))}`.trim();
-      badge.appendChild(createPlexIcon());
-      // Keep the click from reaching the poster's own handlers (frame link, menu).
-      badge.addEventListener('click', (e) => e.stopPropagation());
-      host.appendChild(badge);
-    }
-    badge.href = match.url;
-    badge.title = match.serverName ? `On Plex (${match.serverName})` : 'On Plex';
-    badge.setAttribute('aria-label', badge.title);
-    applyLinkTarget(badge, settings);
-    el.dataset.reelhopPoster = 'server';
+
+    if (plex || add) el.dataset.reelhopPoster = signature;
+    else delete el.dataset.reelhopPoster;
+    dropMarksIfEmpty(el);
   }
+
+  // What a poster should show, given everything we know about it.
+  function posterView(slug, wants) {
+    return {
+      plex: wants.plex ? posterResults.get(slug) || null : null,
+      // null in the map means "already in Radarr", which needs no button.
+      add: wants.radarr ? radarrPoster.get(slug) || null : null
+    };
+  }
+
 
   // ---- Availability filter -------------------------------------------------
   // One bar above the page's main poster grid: All / On Plex / Not on Plex.
@@ -704,7 +796,7 @@
     for (const el of grid.querySelectorAll(POSTER_SELECTOR)) {
       const slug = el.dataset.itemSlug;
       tally.total++;
-      if (!posterResults.has(slug)) tally.pending++;
+      if (!posterKnown.has(slug)) tally.pending++;
       else if (posterResults.get(slug)) tally.available++;
       else tally.unavailable++;
     }
@@ -828,12 +920,14 @@
     }
   }
 
-  // Forget everything and strip the chips; the next scan starts over.
+  // Forget everything and strip the marks; the next scan starts over.
   function resetPosters() {
     posterResults.clear();
+    radarrPoster.clear();
+    posterKnown.clear();
     posterPending.clear();
     posterQueue = new Map();
-    document.querySelectorAll(`.${POSTER_BADGE_CLASS}`).forEach((el) => el.remove());
+    document.querySelectorAll(`.${POSTER_MARKS_CLASS}`).forEach((el) => el.remove());
     document.querySelectorAll('[data-reelhop-poster]').forEach((el) => { delete el.dataset.reelhopPoster; });
     document.getElementById(FILTER_BAR_ID)?.remove();
     document.querySelectorAll(`.${FILTER_HIDDEN_CLASS}`).forEach((el) => el.classList.remove(FILTER_HIDDEN_CLASS));
@@ -844,7 +938,8 @@
   async function scanPosters() {
     if (!isLetterboxd()) return;
     const settings = lastSettings || await getSettings();
-    if (!settings.showPosterBadges || !settings.plexToken) {
+    const wants = posterWants(settings);
+    if (!wants.plex && !wants.radarr) {
       resetPosters();
       return;
     }
@@ -856,50 +951,125 @@
       if (!slug || slug === ownSlug) continue;
       const width = posterWidth(el);
       if (width < POSTER_MIN_WIDTH || width > POSTER_MAX_WIDTH) continue;
-      if (posterResults.has(slug)) {
-        paintPoster(el, posterResults.get(slug), settings);
+      if (posterKnown.has(slug)) {
+        paintPoster(el, posterView(slug, wants), settings);
       } else if (!posterPending.has(slug)) {
         const film = posterFilm(el);
         if (!film.title) continue;
-        el.dataset.reelhopPoster = 'pending';
         posterPending.add(slug);
         posterQueue.set(slug, film);
       }
     }
     if (posterQueue.size > 0 && !posterFlushTimer) {
-      posterFlushTimer = setTimeout(flushPosterQueue, 150);
+      posterFlushTimer = setTimeout(() => flushPosterQueue(settings), 150);
     }
 
-    const grid = mainPosterGrid();
+    const grid = wants.plex ? mainPosterGrid() : null;
     syncFilterBar(settings, grid);
     applyPosterFilter(settings, grid);
   }
 
-  async function flushPosterQueue() {
+  // One round trip per destination for the whole batch, in parallel.
+  async function flushPosterQueue(settings) {
     posterFlushTimer = null;
     const batch = posterQueue;
     posterQueue = new Map();
     if (batch.size === 0) return;
 
-    // Film pages already resolved some of these (7-day cache); a server hit
-    // there counts here too, so a title Plex spells differently keeps its chip.
-    const cached = await getCachedResults('letterboxd', [...batch.keys()]);
+    const wants = posterWants(settings);
+    const keys = [...batch.keys()];
     const films = [...batch].map(([key, film]) => ({ key, title: film.title, year: film.year }));
-    let res = null;
-    try {
-      res = await chrome.runtime.sendMessage({ action: 'plexLibraryMatch', films });
-    } catch (e) {
-      console.warn('[ReelHop] Poster lookup failed:', e);
-    }
+    const ask = async (action) => {
+      try {
+        return await chrome.runtime.sendMessage({ action, films });
+      } catch (e) {
+        console.warn(`[ReelHop] ${action} failed:`, e);
+        return null;
+      }
+    };
 
-    for (const key of batch.keys()) {
-      let match = res && res.ok ? res.matches[key] || null : null;
-      const c = cached[key];
-      if (!match && c && c.type === 'server') match = { type: 'server', url: c.url, serverName: c.serverName };
-      posterResults.set(key, match);
+    const [cached, plexRes, radarrRes] = await Promise.all([
+      // Film pages already resolved some of these (7-day cache); a server hit
+      // there counts here too, so a title Plex spells differently keeps its chip.
+      wants.plex ? getCachedResults('letterboxd', keys) : Promise.resolve({}),
+      wants.plex ? ask('plexLibraryMatch') : Promise.resolve(null),
+      wants.radarr ? ask('radarrLibraryMatch') : Promise.resolve(null)
+    ]);
+
+    if (radarrRes && radarrRes.ok) radarrCanAdd = radarrRes.canAdd === true;
+
+    for (const key of keys) {
+      if (wants.plex) {
+        let match = plexRes && plexRes.ok ? plexRes.matches[key] || null : null;
+        const c = cached[key];
+        if (!match && c && c.type === 'server') match = { type: 'server', url: c.url, serverName: c.serverName };
+        posterResults.set(key, match);
+      }
+      if (wants.radarr) {
+        // A Radarr that can't be reached stays quiet rather than stamping an
+        // error on every poster; the film-page button reports the real problem.
+        if (!radarrRes || !radarrRes.ok) radarrPoster.set(key, null);
+        else if (radarrRes.matches[key]) radarrPoster.set(key, null); // already in Radarr
+        else radarrPoster.set(key, { status: 'add', url: radarrCanAdd ? null : addPageUrl(radarrRes, batch.get(key)) });
+      }
       posterPending.delete(key);
+      posterKnown.add(key);
     }
     scanPosters();
+  }
+
+  // Where the "+" points when it can't add in place (no profile / root folder).
+  function addPageUrl(radarrRes, film) {
+    const term = film.year ? `${film.title} ${film.year}` : film.title;
+    return `${radarrRes.addUrlBase}${encodeURIComponent(term)}`;
+  }
+
+  // One-click add from a poster. The worker re-checks Radarr before posting,
+  // so a stale "+" on a film that is already there reports itself as added.
+  async function addPosterToRadarr(el) {
+    const slug = el.dataset.itemSlug;
+    const film = posterFilm(el);
+    if (!slug || !film.title || !lastSettings) return;
+    const state = radarrPoster.get(slug);
+    if (!state || (state.status !== 'add' && state.status !== 'error')) return;
+
+    radarrPoster.set(slug, { status: 'adding', url: state.url });
+    scanPosters();
+
+    let result;
+    try {
+      result = await chrome.runtime.sendMessage({ action: 'radarrAdd', movie: { title: film.title, year: film.year } });
+    } catch (e) {
+      result = { error: e.message };
+    }
+
+    if (result && result.status === 'in_library') {
+      radarrPoster.set(slug, { status: 'added', url: result.url || state.url });
+    } else {
+      const message = (result && (result.message || result.error)) ||
+        (result && result.status === 'not_found' ? 'Radarr could not find this film' : 'Radarr could not add this film');
+      radarrPoster.set(slug, { status: 'error', url: result && result.url ? result.url : state.url, message });
+    }
+    scanPosters();
+  }
+
+  // The "+" is an anchor so middle-click still opens Radarr, but a plain click
+  // adds in place when we have everything Radarr needs.
+  function onPosterClick(e) {
+    const plus = e.target && e.target.closest ? e.target.closest(`.${POSTER_ADD_CLASS}`) : null;
+    if (!plus) return;
+    if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    const status = plus.dataset.status;
+    if (status === 'adding' || status === 'added') {
+      if (!plus.getAttribute('href')) e.preventDefault();
+      return;
+    }
+    if (!radarrCanAdd) return; // let the anchor open Radarr's add page
+    const el = plus.closest(POSTER_SELECTOR);
+    if (!el) return;
+    e.preventDefault();
+    e.stopPropagation();
+    addPosterToRadarr(el);
   }
 
   function schedulePosterScan() {
@@ -1179,6 +1349,7 @@
 
     observer.observe(document.body, { childList: true, subtree: true });
     document.addEventListener('click', onDocumentClick, true);
+    document.addEventListener('click', onPosterClick, true);
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area !== 'local') return;
       // Radarr settings changed: forget what we knew and ask again.
