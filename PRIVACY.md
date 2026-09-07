@@ -13,7 +13,7 @@ All data is stored locally in your browser via `chrome.storage.local` and is nev
 - **Radarr option lists**: the names of your quality profiles and root folder paths, fetched when you press "Connect" so the settings page can offer them as choices.
 - **Settings**: your display and behavior preferences.
 - **Film link cache**: mappings from films to Plex URLs, kept for 7 days to avoid repeated lookups. You can clear this at any time from the settings page. Radarr status is not cached beyond the current page.
-- **Plex library index** (only if poster badges are on): the title, year and item id of what is in your own Plex libraries, used to mark posters you already own. It is held in session storage, rebuilt every 30 minutes, discarded when the browser closes, and clearable from the settings page. Nothing about your library is sent anywhere.
+- **Plex library index** (only if poster badges are on): the title, year, item id and IMDb ID of what is in your own Plex libraries, used to mark posters you already own. It is held in session storage, rebuilt every 30 minutes, discarded when the browser closes, and clearable from the settings page. Nothing about your library is sent anywhere.
 - **Radarr and Sonarr library indexes** (only if those destinations are on): the title, year and id of what is already in each, used to decide which posters get a **+** and what a button should say. Held in session storage, discarded when the browser closes, and dropped whenever you add something. Nothing about your libraries is sent anywhere.
 - **A random client identifier**: generated locally, sent only to Plex as the standard `X-Plex-Client-Identifier` header.
 

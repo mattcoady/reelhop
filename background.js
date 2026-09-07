@@ -23,7 +23,7 @@ const CACHE_TTL = 7 * 24 * 60 * 60 * 1000; // matches content.js
 // exactly the same matching and wording. See that file for what each does.
 const {
   sanitizeText, normalize, yearsClose,
-  indexByTitle, matchLibraryEntry,
+  indexByTitle, indexByImdb, matchLibraryEntry,
   normalizeRadarrUrl, radarrOriginPattern, radarrHasFile
 } = ReelHop;
 
@@ -313,8 +313,24 @@ function setLibraryIndexState(state) {
 // Fields to keep per item; Plex's own clients use the same exclusion
 // parameters to slim the listing (harmless on servers that ignore them).
 const LIBRARY_LISTING_QUERY = 'includeGuids=1' +
-  '&excludeFields=summary,tagline,art,thumb,contentRating,studio,audienceRating,rating,userRating,duration,addedAt,updatedAt,lastViewedAt,originallyAvailableAt,chapterSource,primaryExtraKey,ratingImage,audienceRatingImage,titleSort,slug,key,guid,skipCount,viewCount,viewOffset,lastRatedAt,hasPremiumExtras,hasPremiumPrimaryExtra' +
+  '&excludeFields=summary,tagline,art,thumb,contentRating,studio,audienceRating,rating,userRating,duration,addedAt,updatedAt,lastViewedAt,originallyAvailableAt,chapterSource,primaryExtraKey,ratingImage,audienceRatingImage,titleSort,slug,key,skipCount,viewCount,viewOffset,lastRatedAt,hasPremiumExtras,hasPremiumPrimaryExtra' +
+  // Guid is deliberately not excluded: it carries the IMDb id, which matches
+  // far better than any title can, and IMDb's own grids hand us one per poster.
   '&excludeElements=Media,Genre,Director,Writer,Country,Role,Collection,Producer,Image,UltraBlurColors,Label,Field,Rating,Chapter,Marker,Extras,Similar,Location,Review';
+
+// Plex reports external ids as "imdb://tt0111161" either in `guid` or in the
+// Guid array, depending on the agent and the server version.
+function imdbIdOf(item) {
+  const direct = typeof item.guid === 'string' && item.guid.match(/(tt\d+)/);
+  if (direct) return direct[1];
+  if (Array.isArray(item.Guid)) {
+    for (const g of item.Guid) {
+      const m = g && typeof g.id === 'string' && g.id.match(/^imdb:\/\/(tt\d+)/);
+      if (m) return m[1];
+    }
+  }
+  return '';
+}
 
 function libraryEntryFrom(item, serverIndex) {
   const title = normalize(item.title || '');
@@ -322,6 +338,8 @@ function libraryEntryFrom(item, serverIndex) {
   const original = normalize(item.originalTitle || '');
   const entry = { s: serverIndex, k: String(item.ratingKey), t: title, y: parseInt(item.year, 10) || 0 };
   if (original && original !== title) entry.o = original;
+  const imdb = imdbIdOf(item);
+  if (imdb) entry.i = imdb;
   return entry;
 }
 
@@ -387,7 +405,7 @@ async function getLibraryIndex(token) {
     try {
       const { libraryIndex } = await chrome.storage.session.get('libraryIndex');
       if (fresh(libraryIndex)) {
-        libraryIndexMemo = { ...libraryIndex, byTitle: indexByTitle(libraryIndex.entries) };
+        libraryIndexMemo = { ...libraryIndex, byTitle: indexByTitle(libraryIndex.entries), byImdb: indexByImdb(libraryIndex.entries) };
         return libraryIndexMemo;
       }
     } catch (e) {
@@ -408,7 +426,7 @@ async function getLibraryIndex(token) {
       const index = { timestamp: Date.now(), servers: built.servers, entries: built.entries, reachable: built.reachable };
       // Nothing reachable: don't cache the empty answer for half an hour.
       if (built.reachable > 0) {
-        libraryIndexMemo = { ...index, byTitle: indexByTitle(index.entries) };
+        libraryIndexMemo = { ...index, byTitle: indexByTitle(index.entries), byImdb: indexByImdb(index.entries) };
         try {
           await chrome.storage.session.set({ libraryIndex: index });
         } catch (e) {
@@ -418,13 +436,13 @@ async function getLibraryIndex(token) {
         return libraryIndexMemo;
       }
       await setLibraryIndexState({ status: 'unreachable' });
-      return { ...index, byTitle: new Map() };
+      return { ...index, byTitle: new Map(), byImdb: new Map() };
     })().finally(() => { libraryIndexPromise = null; });
   }
   return libraryIndexPromise;
 }
 
-// films: [{ key, title, year }] -> { ok, matches: { key: { type: 'server', url, serverName, ratingKey, machineIdentifier } } }
+// films: [{ key, title, year, imdbId? }] -> { ok, matches: { key: { type: 'server', url, serverName, ratingKey, machineIdentifier } } }
 async function plexLibraryMatch(films) {
   const { plexToken } = await chrome.storage.local.get('plexToken');
   if (!plexToken) return { ok: false, reason: 'no_token' };

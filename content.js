@@ -572,9 +572,47 @@
   // Answers are kept for the page's lifetime so re-renders repaint for free.
   // ---------------------------------------------------------------------------
 
-  // Letterboxd renders every poster with this one component; the link check
-  // keeps us to films if it is ever reused for people, lists or other items.
-  const POSTER_SELECTOR = '.react-component[data-item-slug][data-item-link^="/film/"]';
+  // How to find posters and read a film out of one, per site. Letterboxd hands
+  // us a slug and "Title (Year)" on the component itself; IMDb's class names
+  // are build-hashed and its poster alt text is a photo caption, but every
+  // item links to /title/tt…, which is a better key than any title anyway.
+  const POSTER_SOURCES = {
+    letterboxd: {
+      // The link check keeps us to films if the component is ever reused for
+      // people, lists or other items.
+      selector: '.react-component[data-item-slug][data-item-link^="/film/"]',
+      key: (el) => el.dataset.itemSlug || '',
+      film: (el) => parseTitleYear(el.dataset.itemName || el.dataset.itemFullDisplayName ||
+                                   (el.querySelector('img') || {}).alt || ''),
+      // The film page's own poster is huge and already has buttons.
+      host: (el) => el.querySelector('.film-poster, .poster') || el,
+      item: (el) => el.closest('li') || el
+    },
+    imdb: {
+      selector: '.ipc-poster',
+      key: (el) => {
+        const link = el.querySelector('a[href*="/title/tt"]') ||
+                     (el.closest('.ipc-metadata-list-summary-item, .ipc-poster-card, li, .sc-fc35a1ef-1') || document)
+                       .querySelector('a[href*="/title/tt"]');
+        const m = link && link.getAttribute('href').match(/(tt\d+)/);
+        return m ? m[1] : '';
+      },
+      // The id is the match; a title would only be a fallback we don't need.
+      film: () => ({ title: '', year: '' }),
+      host: (el) => el,
+      item: (el) => el.closest('li, .ipc-poster-card') || el
+    }
+  };
+
+  function posterSource() {
+    if (isLetterboxd()) return POSTER_SOURCES.letterboxd;
+    if (/(^|\.)imdb\.com$/.test(location.hostname)) return POSTER_SOURCES.imdb;
+    return null;
+  }
+
+  // Letterboxd's selector, still used by the filter bar (which is
+  // Letterboxd-only, because it needs a single grid to act on).
+  const POSTER_SELECTOR = POSTER_SOURCES.letterboxd.selector;
   const POSTER_MARKS_CLASS = 'reelhop-poster-marks';
   const POSTER_BADGE_CLASS = 'reelhop-poster-badge'; // the Plex chip
   const POSTER_ADD_CLASS = 'reelhop-poster-add';     // the Radarr "+"
@@ -588,7 +626,7 @@
   const FILTER_BAR_ID = 'reelhop-poster-filter';
   const FILTER_HIDDEN_CLASS = 'reelhop-filtered-out';
   const FILTER_MIN_POSTERS = 8; // below this a grid is a preview strip, not a page of films
-  const posterResults = new Map(); // slug -> Plex match | null
+  const posterResults = new Map(); // key (slug or tt id) -> Plex match | null
   const radarrPoster = new Map();  // slug -> { status, url, ... } | null (nothing to show)
   const posterKnown = new Set();   // slugs every enabled destination has answered for
   const posterPending = new Set(); // slugs queued or in flight
@@ -605,11 +643,14 @@
     return location.hostname.endsWith('letterboxd.com');
   }
 
-  // Which destinations want to mark posters right now.
+  // Which destinations want to mark posters right now. The Radarr "+" is
+  // Letterboxd-only: IMDb grids mix films and series with nothing on the
+  // poster to tell them apart, so there is no safe service to add to.
   function posterWants(settings) {
     return {
       plex: settings.showPosterBadges && !!settings.plexToken,
-      radarr: settings.showPosterAdd && settings.radarrEnabled && !!settings.radarrUrl
+      radarr: settings.showPosterAdd && settings.radarrEnabled && !!settings.radarrUrl &&
+              posterSource() === POSTER_SOURCES.letterboxd
     };
   }
 
@@ -617,15 +658,10 @@
     return parseInt(el.dataset.imageWidth, 10) || el.getBoundingClientRect().width || 0;
   }
 
-  // "Title (Year)" from the component's data, or the image alt as a fallback.
-  function posterFilm(el) {
-    return parseTitleYear(el.dataset.itemName || el.dataset.itemFullDisplayName ||
-                          (el.querySelector('img') || {}).alt || '');
-  }
 
   // The stack of marks in the poster's corner, created on first use.
   function posterMarks(el, create) {
-    const host = el.querySelector('.film-poster, .poster') || el;
+    const host = (posterSource() || POSTER_SOURCES.letterboxd).host(el);
     let marks = host.querySelector(`.${POSTER_MARKS_CLASS}`);
     if (!marks && create) {
       marks = document.createElement('div');
@@ -1003,11 +1039,12 @@
     const modes = grid && settings.showPosterFilter
       ? currentModes(settings)
       : { plex: 'all', radarr: 'all' };
+    const source = posterSource() || POSTER_SOURCES.letterboxd;
     const inGrid = new Map(grid ? gridPosters(grid).map(p => [p.el, p]) : []);
-    for (const el of document.querySelectorAll(POSTER_SELECTOR)) {
+    for (const el of document.querySelectorAll(source.selector)) {
       const poster = inGrid.get(el);
       const hide = !!poster && posterHidden(modes, poster);
-      (el.closest('li') || el).classList.toggle(FILTER_HIDDEN_CLASS, hide);
+      source.item(el).classList.toggle(FILTER_HIDDEN_CLASS, hide);
     }
   }
 
@@ -1028,9 +1065,10 @@
   }
 
   // Paint known posters, queue unknown ones. Cheap enough to run after every
-  // (debounced) DOM mutation: Letterboxd swaps poster nodes as images load.
+  // (debounced) DOM mutation: these grids swap poster nodes as images load.
   async function scanPosters() {
-    if (!isLetterboxd()) return;
+    const source = posterSource();
+    if (!source) return;
     const settings = lastSettings || await getSettings();
     const wants = posterWants(settings);
     if (!wants.plex && !wants.radarr) {
@@ -1038,20 +1076,22 @@
       return;
     }
     const adapter = getActiveAdapter();
-    const ownSlug = adapter && adapter.id === 'letterboxd' ? adapter.getKey() : '';
+    const ownKey = adapter ? adapter.getKey() : '';
 
-    for (const el of document.querySelectorAll(POSTER_SELECTOR)) {
-      const slug = el.dataset.itemSlug;
-      if (!slug || slug === ownSlug) continue;
+    for (const el of document.querySelectorAll(source.selector)) {
+      const key = source.key(el);
+      if (!key || key === ownKey) continue;
       const width = posterWidth(el);
       if (width < POSTER_MIN_WIDTH || width > POSTER_MAX_WIDTH) continue;
-      if (posterKnown.has(slug)) {
-        paintPoster(el, posterView(slug, wants), settings);
-      } else if (!posterPending.has(slug)) {
-        const film = posterFilm(el);
-        if (!film.title) continue;
-        posterPending.add(slug);
-        posterQueue.set(slug, film);
+      if (posterKnown.has(key)) {
+        paintPoster(el, posterView(key, wants), settings);
+      } else if (!posterPending.has(key)) {
+        const film = source.film(el);
+        // Letterboxd matches on the title; IMDb matches on the key itself,
+        // which is the film's IMDb id.
+        if (!film.title && !/^tt\d+$/.test(key)) continue;
+        posterPending.add(key);
+        posterQueue.set(key, film);
       }
     }
     if (posterQueue.size > 0 && !posterFlushTimer) {
@@ -1072,7 +1112,13 @@
 
     const wants = posterWants(settings);
     const keys = [...batch.keys()];
-    const films = [...batch].map(([key, film]) => ({ key, title: film.title, year: film.year }));
+    const films = [...batch].map(([key, film]) => ({
+      key,
+      title: film.title,
+      year: film.year,
+      // On IMDb the key is the film's IMDb id, which matches exactly.
+      imdbId: /^tt\d+$/.test(key) ? key : undefined
+    }));
     const ask = async (action) => {
       try {
         return await chrome.runtime.sendMessage({ action, films });
@@ -1143,8 +1189,8 @@
   // One-click add from a poster. The worker re-checks Radarr before posting,
   // so a stale "+" on a film that is already there reports itself as added.
   async function addPosterToRadarr(el) {
-    const slug = el.dataset.itemSlug;
-    const film = posterFilm(el);
+    const slug = POSTER_SOURCES.letterboxd.key(el);
+    const film = POSTER_SOURCES.letterboxd.film(el);
     if (!slug || !film.title || !lastSettings) return;
     const state = radarrPoster.get(slug);
     if (!state || (state.status !== 'add' && state.status !== 'error')) return;
@@ -1192,7 +1238,7 @@
   }
 
   function schedulePosterScan() {
-    if (!isLetterboxd() || posterScanTimer) return;
+    if (!posterSource() || posterScanTimer) return;
     posterScanTimer = setTimeout(() => {
       posterScanTimer = null;
       scanPosters();
@@ -1413,10 +1459,13 @@
       if (url) el.href = url;
       el.classList.toggle('on-server', type === 'server');
       el.classList.toggle('reelhop-checking', checking);
+      const wrongMatchHint = '\nRight-click if this is the wrong film.';
       if (type === 'server' && serverName) {
-        el.title = `Watch on Plex Server (${serverName})`;
+        el.title = `Watch on Plex Server (${serverName})${wrongMatchHint}`;
       } else if (checking) {
         el.title = 'Checking Plex…';
+      } else if (type === 'discover') {
+        el.title = `Open in Plex${wrongMatchHint}`;
       } else {
         el.title = 'Open in Plex';
       }
@@ -1432,6 +1481,45 @@
       watchBadge.classList.toggle('on-server', type === 'server');
       watchBadge.classList.toggle('reelhop-checking', checking);
     }
+  }
+
+  // Plex matches by title and year when there is no ID to go on, so it can
+  // land on the wrong film. There was no way to say so: the wrong link was
+  // cached for a week. Right-clicking a Plex button forgets the match for this
+  // film and asks again, and a second right-click on the search fallback
+  // leaves it alone. Right-click rather than another visible control, because
+  // a wrong match is rare and the buttons are already busy.
+  async function forgetPlexMatch() {
+    const adapter = getActiveAdapter();
+    if (!adapter || !lastSettings) return;
+    const filmKey = adapter.getKey();
+    const filmToken = `${adapter.id}|${filmKey}`;
+    const movie = adapter.extract();
+    if (!movie || !movie.title) return;
+
+    await new Promise((resolve) => chrome.storage.local.remove(cacheKey(adapter.id, filmKey), resolve));
+    // Forget the poster answer too, so a grid on the way back agrees.
+    posterResults.delete(filmKey);
+    posterKnown.delete(filmKey);
+
+    const fallback = getSearchUrl(movie.title, movie.year);
+    displayState = { token: filmToken, url: fallback, type: 'checking' };
+    applyDisplayState(filmToken);
+    if (!isResolvingPlex && lastSettings.plexToken) {
+      await resolvePlex(adapter, movie, filmKey, filmToken, fallback);
+    } else {
+      displayState = { token: filmToken, url: fallback, type: 'search' };
+      applyDisplayState(filmToken);
+    }
+  }
+
+  function onPlexContextMenu(e) {
+    const link = e.target && e.target.closest ? e.target.closest(`.${LINK_CLASS}`) : null;
+    if (!link) return;
+    // Only worth offering when there is a match to be wrong about.
+    if (!displayState || displayState.type === 'search' || displayState.type === 'checking') return;
+    e.preventDefault();
+    forgetPlexMatch();
   }
 
   function removeAllInjected() {
@@ -1480,6 +1568,7 @@
     observer.observe(document.body, { childList: true, subtree: true });
     document.addEventListener('click', onDocumentClick, true);
     document.addEventListener('click', onPosterClick, true);
+    document.addEventListener('contextmenu', onPlexContextMenu, true);
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area !== 'local') return;
       // Radarr settings changed: forget what we knew and ask again.

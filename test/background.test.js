@@ -193,10 +193,10 @@ const pmsSections = [
 ];
 const pmsItems = {
   '1': [
-    { ratingKey: '901', type: 'movie', title: 'Inception', year: 2010 },
+    { ratingKey: '901', type: 'movie', title: 'Inception', year: 2010, Guid: [{ id: 'imdb://tt1375666' }, { id: 'tmdb://27205' }] },
     { ratingKey: '902', type: 'movie', title: 'Spider-Man: Into the Spider-Verse', year: 2018 },
     { ratingKey: '903', type: 'movie', title: 'PlayTime', originalTitle: 'Play Time', year: 1967 },
-    { ratingKey: '904', type: 'movie', title: 'The Thing', year: 1982 },
+    { ratingKey: '904', type: 'movie', title: 'The Thing', year: 1982, guid: 'com.plexapp.agents.imdb://tt0084787?lang=en' },
     { ratingKey: '905', type: 'movie', title: 'The Thing', year: 2011 },
     { ratingKey: '906', type: 'movie', title: 'Dune: Part Two', year: 2023 } // Letterboxd says 2024
   ],
@@ -467,6 +467,16 @@ const radarrServer = http.createServer((req, res) => {
   check('TV shows are indexed too', r.matches.severance && r.matches.severance.ratingKey === '950', r.matches);
   check('a title that is not on the server has no match', !('the-holdovers' in r.matches), r.matches);
   check('report counts what was indexed', r.indexed === 7 && r.servers === 1, r);
+
+  // An IMDb id beats title guessing, which is what IMDb's own grids give us.
+  r = await api.plexLibraryMatch([
+    { key: 'byId', title: 'Something Else Entirely', year: '1999', imdbId: 'tt1375666' },
+    { key: 'legacyGuid', title: 'Nope', year: '1999', imdbId: 'tt0084787' },
+    { key: 'unknownId', title: 'Nope', year: '1999', imdbId: 'tt9999999' }
+  ]);
+  check('an IMDb id matches even when the title does not', r.matches.byId && r.matches.byId.ratingKey === '901', r.matches);
+  check('a legacy agent guid is read too', r.matches.legacyGuid && r.matches.legacyGuid.ratingKey === '904', r.matches);
+  check('an id that is not in the library matches nothing', !('unknownId' in r.matches), r.matches);
 
   pms.sectionCalls = 0; pms.listCalls = 0;
   r = await ask([['playtime', 'Play Time', '1967'], ['dune-part-two', 'Dune: Part Two', '2024']]);

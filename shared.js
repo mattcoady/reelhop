@@ -75,13 +75,29 @@
     return byTitle;
   }
 
+  // Entries that carry an IMDb id (`i`), keyed by it. An id beats any amount
+  // of title cleverness, and IMDb's own pages hand us one for every poster.
+  function indexByImdb(entries) {
+    const byImdb = new Map();
+    for (const entry of entries || []) {
+      if (entry.i && !byImdb.has(entry.i)) byImdb.set(entry.i, entry);
+    }
+    return byImdb;
+  }
+
   // Best entry for one film: exact normalized title (or original title), year
   // within one, preferring the exact year and a title over an original-title
   // hit. With no year to go on, only an unambiguous title counts — a wrong
   // match is worse than none.
   function matchLibraryEntry(index, film) {
-    const title = normalize(film && film.title);
-    if (!title || !index || !index.byTitle) return null;
+    if (!index || !film) return null;
+    // An IMDb id is exact; try it before anything else.
+    if (film.imdbId && index.byImdb) {
+      const byId = index.byImdb.get(film.imdbId);
+      if (byId) return byId;
+    }
+    const title = normalize(film.title);
+    if (!title || !index.byTitle) return null;
     const candidates = index.byTitle.get(title);
     if (!candidates || candidates.length === 0) return null;
 
@@ -290,6 +306,7 @@
     yearsClose,
     parseTitleYear,
     indexByTitle,
+    indexByImdb,
     matchLibraryEntry,
     normalizeRadarrUrl,
     radarrOriginPattern,

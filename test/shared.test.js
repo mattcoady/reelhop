@@ -60,14 +60,14 @@ eq('empty input is handled', R.parseTitleYear(''), { title: '', year: '' });
 // =============================================================================
 console.log('library matching');
 const entries = [
-  { t: 'inception', y: 2010, k: '901' },
+  { t: 'inception', y: 2010, k: '901', i: 'tt1375666' },
   { t: 'playtime', o: 'playtime2', y: 1967, k: '903' },
   { t: 'thething', y: 1982, k: '904' },
   { t: 'thething', y: 2011, k: '905' },
   { t: 'duneparttwo', y: 2023, k: '906' },
   { t: 'severance', y: 2022, k: '950' }
 ];
-const index = { byTitle: R.indexByTitle(entries) };
+const index = { byTitle: R.indexByTitle(entries), byImdb: R.indexByImdb(entries) };
 const find = (title, year) => R.matchLibraryEntry(index, { title, year });
 
 check('indexes originals under their own key', index.byTitle.has('playtime2'), [...index.byTitle.keys()]);
@@ -86,6 +86,15 @@ eq('an empty title matches nothing', find('', '1982'), null);
 eq('an empty index matches nothing', R.matchLibraryEntry({ byTitle: new Map() }, { title: 'Inception', year: '2010' }), null);
 eq('a missing index is handled', R.matchLibraryEntry(null, { title: 'Inception' }), null);
 eq('a missing film is handled', R.matchLibraryEntry(index, null), null);
+
+console.log('matching by IMDb id');
+eq('an id wins over a wrong title', R.matchLibraryEntry(index, { title: 'Nonsense', year: '1900', imdbId: 'tt1375666' }).k, '901');
+eq('an id wins with no title at all', R.matchLibraryEntry(index, { imdbId: 'tt1375666' }).k, '901');
+eq('an unknown id falls back to the title', R.matchLibraryEntry(index, { title: 'Inception', year: '2010', imdbId: 'tt0000000' }).k, '901');
+eq('an unknown id and an unknown title match nothing', R.matchLibraryEntry(index, { title: 'Nonsense', imdbId: 'tt0000000' }), null);
+check('entries without an id are not indexed by one', R.indexByImdb(entries).size === 1, R.indexByImdb(entries).size);
+check('the first entry wins a duplicated id',
+  R.indexByImdb([{ t: 'a', i: 'tt1', k: 'first' }, { t: 'b', i: 'tt1', k: 'second' }]).get('tt1').k === 'first');
 
 // An exact-year hit must beat a near-year hit even when the near one comes first.
 const closeIndex = { byTitle: R.indexByTitle([{ t: 'x', y: 1999, k: 'near' }, { t: 'x', y: 2000, k: 'exact' }]) };
