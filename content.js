@@ -8,8 +8,10 @@
 // Two kinds of plug-in live here:
 //   - Site adapters (SITE_ADAPTERS): how to read a film from, and inject
 //     buttons into, one website. LETTERBOXD is the fully commented reference.
-//   - Destination state: Plex (displayState) and Radarr (radarrState), each
-//     resolved independently in the background so one can't stall the other.
+//   - Destination state: Plex (displayState) and the library manager
+//     (libraryState), resolved independently in the background so one can't
+//     stall the other. A title is either a movie or a show, so the library
+//     button is a single slot pointing at Radarr or Sonarr as appropriate.
 //
 // A third, Letterboxd-only module (Poster badges) marks posters on grids,
 // lists and the watchlist with a Plex chip when the title is on the user's
@@ -22,7 +24,7 @@
   // Pure helpers shared with the worker and the settings page (shared.js runs
   // first in this same isolated world; see manifest content_scripts).
   const {
-    sanitizeText, parseTitleYear, badgeLabelFor, radarrView,
+    sanitizeText, parseTitleYear, badgeLabelFor, libraryView,
     posterAddView, posterSizeClass, posterHidden, gridCounts
   } = ReelHop;
 
@@ -35,17 +37,17 @@
 
   let currentUrl = '';
   let isResolvingPlex = false;
-  let isResolvingRadarr = false;
+  let isResolvingLibrary = false;
   let injectScheduled = false;
   let lastSettings = null;
   // Per-destination display state for the current film, kept across dynamic
   // re-renders so a mid-resolve "Checking…" (or the final result) survives the
   // page mutating. Each carries the film token it belongs to.
   let displayState = null; // Plex:   { token, url, type, serverName }
-  let radarrState = null;  // Radarr: { token, status, url, canAdd, hasFile, ... }
-  // Radarr answers are memoized only for the page's lifetime: "not in your
+  let libraryState = null;  // Radarr or Sonarr: { token, destination, status, url, canAdd, ... }
+  // Library answers are memoized only for the page's lifetime: "not in your
   // library" has to go stale the moment the user clicks Add.
-  const radarrMemo = new Map();
+  const libraryMemo = new Map();
   const RADARR_RECHECK_MS = 30 * 1000; // re-ask when a tab returns to view after this long
   const FILTER_MODES = ['all', 'available', 'unavailable'];
   const RADARR_FILTER_MODES = ['all', 'in', 'out'];
@@ -126,7 +128,7 @@
   }
 
   function paintRadarrButton(a, state) {
-    const v = radarrView(state);
+    const v = libraryView(state);
     a.href = (state && state.url) || '#';
     a.title = v.title;
     a.dataset.status = state ? state.status : 'checking';
@@ -502,7 +504,9 @@
         'posterFilter',
         'posterFilterRadarr',
         'radarrEnabled',
-        'radarrUrl'
+        'radarrUrl',
+        'sonarrEnabled',
+        'sonarrUrl'
       ], (items) => {
         lastSettings = {
           plexToken: items.plexToken || '',
@@ -517,7 +521,9 @@
           posterFilter: FILTER_MODES.includes(items.posterFilter) ? items.posterFilter : 'all',
           posterFilterRadarr: RADARR_FILTER_MODES.includes(items.posterFilterRadarr) ? items.posterFilterRadarr : 'all',
           radarrEnabled: items.radarrEnabled === true,
-          radarrUrl: (items.radarrUrl || '').trim()
+          radarrUrl: (items.radarrUrl || '').trim(),
+          sonarrEnabled: items.sonarrEnabled === true,
+          sonarrUrl: (items.sonarrUrl || '').trim()
         };
         resolve(lastSettings);
       });
@@ -1202,16 +1208,25 @@
     return adapter ? `${adapter.id}|${adapter.getKey()}` : null;
   }
 
-  // Radarr is movies-only; skip it for shows and when it isn't set up.
-  function radarrWanted(settings, movie) {
-    return settings.radarrEnabled && !!settings.radarrUrl && movie.type !== 'show';
+  // Radarr manages movies, Sonarr manages shows. A title with an unknown type
+  // is treated as a film, which is what Letterboxd and most IMDb pages are.
+  function libraryDestination(settings, movie) {
+    if (movie.type === 'show') {
+      return settings.sonarrEnabled && settings.sonarrUrl ? 'sonarr' : null;
+    }
+    return settings.radarrEnabled && settings.radarrUrl ? 'radarr' : null;
   }
 
-  function radarrStateFrom(result, filmToken, settings) {
+  function libraryUrlFor(settings, destination) {
+    return destination === 'sonarr' ? settings.sonarrUrl : settings.radarrUrl;
+  }
+
+  function libraryStateFrom(result, filmToken, settings, destination) {
+    const url = libraryUrlFor(settings, destination);
     if (!result || result.error) {
-      return { token: filmToken, status: 'unreachable', url: settings.radarrUrl, message: result && result.error };
+      return { token: filmToken, destination, status: 'unreachable', url, message: result && result.error };
     }
-    return { token: filmToken, ...result, url: result.url || settings.radarrUrl };
+    return { token: filmToken, destination, ...result, url: result.url || url };
   }
 
   // Repaint whatever buttons are on the page from the stored states — but only
@@ -1220,8 +1235,8 @@
     if (displayState && displayState.token === token) {
       updateAllPlexLinks(displayState.url, displayState.type, displayState.serverName);
     }
-    if (radarrState && radarrState.token === token) {
-      document.querySelectorAll(`.${RADARR_CLASS}`).forEach((a) => paintRadarrButton(a, radarrState));
+    if (libraryState && libraryState.token === token) {
+      document.querySelectorAll(`.${RADARR_CLASS}`).forEach((a) => paintRadarrButton(a, libraryState));
     }
   }
 
@@ -1234,7 +1249,7 @@
     if (!displayState || displayState.token !== token) return;
     adapter.inject({
       plex: displayState,
-      radarr: radarrState && radarrState.token === token ? radarrState : null
+      radarr: libraryState && libraryState.token === token ? libraryState : null
     }, lastSettings);
     applyDisplayState(token);
   }
@@ -1263,14 +1278,15 @@
     }
 
     // Radarr: the memoized answer, or "Checking…" until the worker replies.
-    if (!radarrWanted(settings, movie)) {
-      radarrState = null;
-    } else if (!radarrState || radarrState.token !== filmToken) {
-      radarrState = radarrMemo.get(filmToken) ||
-                    { token: filmToken, status: 'checking', url: settings.radarrUrl };
+    const destination = libraryDestination(settings, movie);
+    if (!destination) {
+      libraryState = null;
+    } else if (!libraryState || libraryState.token !== filmToken) {
+      libraryState = libraryMemo.get(filmToken) ||
+                    { token: filmToken, destination, status: 'checking', url: libraryUrlFor(settings, destination) };
     }
 
-    adapter.inject({ plex: displayState, radarr: radarrState }, settings);
+    adapter.inject({ plex: displayState, radarr: libraryState }, settings);
     applyDisplayState(filmToken);
 
     // Resolve each destination in the background worker, in parallel.
@@ -1278,8 +1294,8 @@
     if (!cached && settings.plexToken && !isResolvingPlex) {
       jobs.push(resolvePlex(adapter, movie, filmKey, filmToken, plexUrl));
     }
-    if (radarrState && radarrState.status === 'checking' && !isResolvingRadarr) {
-      jobs.push(resolveRadarr(movie, filmToken, settings));
+    if (libraryState && libraryState.status === 'checking' && !isResolvingLibrary) {
+      jobs.push(resolveLibrary(movie, filmToken, settings, destination));
     }
     await Promise.all(jobs);
   }
@@ -1311,56 +1327,57 @@
     }
   }
 
-  async function resolveRadarr(movie, filmToken, settings) {
-    isResolvingRadarr = true;
+  async function resolveLibrary(movie, filmToken, settings, destination) {
+    isResolvingLibrary = true;
     try {
-      const result = await chrome.runtime.sendMessage({ action: 'radarrResolve', movie });
+      const result = await chrome.runtime.sendMessage({ action: `${destination}Resolve`, movie });
       if (currentFilmToken() === filmToken) {
         if (result && result.status === 'disabled') {
-          radarrState = null;
+          libraryState = null;
         } else {
-          radarrState = radarrStateFrom(result, filmToken, settings);
-          if (['in_library', 'missing', 'not_found'].includes(radarrState.status)) {
-            radarrMemo.set(filmToken, { ...radarrState, at: Date.now() });
+          libraryState = libraryStateFrom(result, filmToken, settings, destination);
+          if (['in_library', 'missing', 'not_found'].includes(libraryState.status)) {
+            libraryMemo.set(filmToken, { ...libraryState, at: Date.now() });
           }
         }
       }
     } catch (e) {
       console.warn('[ReelHop] Radarr resolve failed:', e);
       if (currentFilmToken() === filmToken) {
-        radarrState = { token: filmToken, status: 'unreachable', url: settings.radarrUrl, message: e.message };
+        libraryState = { token: filmToken, destination, status: 'unreachable', url: libraryUrlFor(settings, destination), message: e.message };
       }
     } finally {
-      isResolvingRadarr = false;
+      isResolvingLibrary = false;
       renderCurrent();
       if (currentFilmToken() !== filmToken) scheduleInject();
     }
   }
 
-  // One-click add, triggered from a Radarr button in the 'missing' state.
-  async function addToRadarr() {
+  // One-click add, triggered from a library button in the 'missing' state.
+  async function addToLibrary() {
     const adapter = getActiveAdapter();
     if (!adapter || !lastSettings) return;
     const movie = adapter.extract();
     const filmToken = currentFilmToken();
-    if (!movie || !radarrState || radarrState.token !== filmToken || radarrState.status !== 'missing') return;
+    if (!movie || !libraryState || libraryState.token !== filmToken || libraryState.status !== 'missing') return;
 
-    radarrState = { ...radarrState, status: 'adding' };
+    libraryState = { ...libraryState, status: 'adding' };
     applyDisplayState(filmToken);
 
+    const destination = libraryState.destination || 'radarr';
     let result;
     try {
-      result = await chrome.runtime.sendMessage({ action: 'radarrAdd', movie });
+      result = await chrome.runtime.sendMessage({ action: `${destination}Add`, movie });
     } catch (e) {
       result = { error: e.message };
     }
     if (currentFilmToken() !== filmToken) return;
 
-    radarrState = radarrStateFrom(result, filmToken, lastSettings);
-    if (radarrState.status === 'in_library') {
-      radarrMemo.set(filmToken, { ...radarrState, at: Date.now() });
+    libraryState = libraryStateFrom(result, filmToken, lastSettings, destination);
+    if (libraryState.status === 'in_library') {
+      libraryMemo.set(filmToken, { ...libraryState, at: Date.now() });
     } else {
-      radarrMemo.delete(filmToken);
+      libraryMemo.delete(filmToken);
     }
     applyDisplayState(filmToken);
   }
@@ -1373,10 +1390,10 @@
     if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
 
     const status = btn.dataset.status;
-    if (status === 'missing' && radarrState && radarrState.canAdd) {
+    if (status === 'missing' && libraryState && libraryState.canAdd) {
       e.preventDefault();
       e.stopPropagation();
-      addToRadarr();
+      addToLibrary();
     } else if (status === 'permission' || status === 'unconfigured') {
       e.preventDefault();
       e.stopPropagation();
@@ -1466,9 +1483,9 @@
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area !== 'local') return;
       // Radarr settings changed: forget what we knew and ask again.
-      if (Object.keys(changes).some(k => k.startsWith('radarr'))) {
-        radarrMemo.clear();
-        radarrState = null;
+      if (Object.keys(changes).some(k => k.startsWith('radarr') || k.startsWith('sonarr'))) {
+        libraryMemo.clear();
+        libraryState = null;
       }
       // Token or chip settings changed: the chips describe a different world.
       if (POSTER_RESET_KEYS.some(k => k in changes)) {
@@ -1482,13 +1499,14 @@
     // saying "Wanted". When the tab comes back into view and the answer is
     // old, ask again; the button repaints only once Radarr replies.
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState !== 'visible' || isResolvingRadarr || !lastSettings) return;
+      if (document.visibilityState !== 'visible' || isResolvingLibrary || !lastSettings) return;
       const token = currentFilmToken();
-      const memo = radarrMemo.get(token);
+      const memo = libraryMemo.get(token);
       if (!memo || Date.now() - (memo.at || 0) < RADARR_RECHECK_MS) return;
       const adapter = getActiveAdapter();
       const movie = adapter && adapter.isFilmPage() ? adapter.extract() : null;
-      if (movie && radarrWanted(lastSettings, movie)) resolveRadarr(movie, token, lastSettings);
+      const destination = movie && libraryDestination(lastSettings, movie);
+      if (destination) resolveLibrary(movie, token, lastSettings, destination);
     });
     window.addEventListener('popstate', handleUrlChange);
     document.addEventListener('turbo:load', handleUrlChange);

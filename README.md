@@ -17,7 +17,7 @@ Hop from the movie sites you already browse to your own media stack. ReelHop is 
   - On **Letterboxd** film pages: a stacked group of destination buttons in the sidebar, plus a Plex badge in "Where to watch" and a Plex link beside the IMDb / TMDb links.
   - On **IMDb** title pages: a row of destination pills under the title, styled to match IMDb's own buttons (dark and white "Reference view" both handled).
 - **Plex** — click **Sign in with Plex** (or paste a token) and links deep-link straight to the film **on your own server** if it's in your library, falling back to its **Plex Discover** page. Signed out, links open Plex search — zero setup.
-- **Radarr** — the button tells you where a movie stands (**Downloaded**, **Wanted**, **Unmonitored**) and opens it in Radarr; if it isn't in Radarr yet, one click **adds it** with your chosen quality profile, root folder and minimum availability, optionally kicking off a search right away. TV shows never get a Radarr button (that's Sonarr's job, coming next).
+- **Radarr and Sonarr** — the button tells you where a title stands (**Downloaded**, **Partial**, **Wanted**, **Unmonitored**) and opens it in the right app; if it isn't there yet, one click **adds it** with your chosen quality profile and root folder, optionally kicking off a search right away. A title is either a film or a series, so the page shows one button: Radarr for films, Sonarr for series (with **Partial** meaning some episodes have landed).
 - **Poster badges** — every Letterboxd poster grid (browse pages, lists, your watchlist, "similar films") gets a small Plex mark on the films that are already on your server, so you can see what you own without opening anything. One request per page, not per poster.
 - **Availability filter** — a bar above the grid narrows it by Plex (**On Plex** / **Not on Plex**) and by Radarr (**In Radarr** / **Not in Radarr**), with live counts. The two combine, so "Not on Plex" plus "Not in Radarr" is everything on the page worth grabbing. Your choices stick while you page through.
 - **Add from the grid** — posters that aren't in Radarr yet carry a quiet **+**. One click adds the film with your chosen profile and root folder, without leaving the page. Or filter down to what's missing and **add the whole page at once**, one confirmation, one at a time, with each poster ticking over as it lands.
@@ -58,7 +58,7 @@ ReelHop works out of the box with Plex search links. Everything below is optiona
 
 **Note on server connections**: ReelHop only contacts your Plex servers over their secure `*.plex.direct` HTTPS addresses (Plex's default for all signed-in servers). Servers reachable only via plain-HTTP LAN addresses won't be found.
 
-### Radarr
+### Radarr (films) and Sonarr (series)
 
 1. On the settings page, turn on the **Radarr** switch.
 2. Enter your Radarr address as you'd type it in the browser, e.g. `http://192.168.1.10:7878` or `https://radarr.example.com/radarr` (include the URL base if you have one).
@@ -80,11 +80,16 @@ Each card carries a status dot, mirrored in the side nav. It reports state, not 
 | Plex token (paste) | empty | Manual alternative to signing in, verified before it is kept |
 | Link destination | Smart | Server first → Discover → Search, or pin one destination |
 | Plex: Library index | builds on demand | Shows how many of your Plex titles are indexed for poster badges, and rebuilds it |
-| Radarr | off | Shows a Radarr button on movie pages |
+| Radarr | off | Shows a Radarr button on film pages |
 | Radarr: address / API key | empty | Where Radarr lives and how to authenticate |
 | Radarr: Quality profile / Root folder | first available | Used for one-click adds |
 | Radarr: Minimum availability | Released | Passed through to Radarr on add |
-| Radarr: Search on add | on | Tells Radarr to start looking as soon as the movie is added |
+| Radarr: Search on add | on | Tells Radarr to start looking as soon as the film is added |
+| Sonarr | off | Shows a Sonarr button on TV pages |
+| Sonarr: address / API key | empty | Where Sonarr lives and how to authenticate |
+| Sonarr: Quality profile / Root folder | first available | Used for one-click adds |
+| Sonarr: Monitor | All episodes | Which episodes Sonarr watches for on add |
+| Sonarr: Search on add | on | Tells Sonarr to look for missing episodes right away |
 | Letterboxd: Poster badges | on | Marks posters in grids, lists and watchlists that are on your Plex server |
 | Letterboxd: Radarr add buttons | on | Puts a + on posters that aren't in Radarr yet |
 | Letterboxd: Availability filter | on | Adds the Plex and Radarr filter bar, and bulk add, above poster grids |
@@ -103,7 +108,7 @@ Each card carries a status dot, mirrored in the side nav. It reports state, not 
 - **Poster badges**: searching per poster would mean dozens of requests per grid, so the worker instead lists every movie and show section once (`/library/sections/<id>/all`, trimmed to title, year and rating key) and keeps that index in session storage for 30 minutes. The build publishes its state to session storage as it goes, so the settings page can show it live and offer a **Build now** / **Rebuild** button wherever the build was actually started. The content script sends one message per batch of posters and matches locally on normalized title + year (±1); a title that appears twice with no year to separate it gets no badge rather than a wrong one.
 - **Poster + buttons**: Radarr has no batch lookup, so the worker pulls the library once (`GET /api/v3/movie`), trims it to what matching needs, and answers a whole grid from that. The index is held for five minutes and dropped the moment anything is added or a Radarr setting changes. Clicking a + sends the film's title and year to `radarrAdd`, which re-checks Radarr before posting, so a stale + on something already there reports itself as added rather than erroring.
 - **Availability filter**: purely local. It reuses the answers the badges already have, hides the grid items the modes exclude, and never asks Plex or Radarr anything extra. Each button's count is what you would see after clicking it, so the other half of the filter is held at its current setting rather than ignored. Bulk add walks the shown films one at a time rather than firing a page of requests at Radarr at once. Posters still waiting on an answer stay visible (the bar says "Checking Plex…") so nothing disappears on a guess, and if a filter empties the page it offers a **Show all** button rather than leaving you on a blank grid. It appears only on pages built around one grid of at least eight films, so preview strips and film pages are left alone.
-- **Radarr**: it looks the movie up (`/api/v3/movie/lookup` by IMDb ID, then TMDB ID, then title), confirms whether it's already in your library (`/api/v3/movie?tmdbId=`), and on click POSTs the lookup result back to `/api/v3/movie` with your profile, root folder and availability. The API key is sent only as the `X-Api-Key` header, only to your configured URL.
+- **Radarr and Sonarr**: same shape, different nouns. Radarr looks a film up (`/api/v3/movie/lookup` by IMDb ID, then TMDB ID, then title), confirms whether it's already there (`/api/v3/movie?tmdbId=`), and on click POSTs the lookup result back to `/api/v3/movie`. Sonarr does the same through `/series/lookup`, `/series?tvdbId=` and `/series`, and reports **Partial** when only some episodes have landed. A title is either a film or a series, so `content.js` keeps one library button and points it at whichever service applies. Each API key is sent only as the `X-Api-Key` header, only to that service's configured URL. In `options.js` both cards are built by one `wireArrService` call each, so they cannot drift apart.
 
 ---
 
@@ -113,7 +118,7 @@ Each card carries a status dot, mirrored in the side nav. It reports state, not 
 - [x] IMDb support
 - [x] Plex destination
 - [x] Radarr destination
-- [ ] Sonarr destination (TV shows)
+- [x] Sonarr destination (TV shows)
 - [ ] Seerr destination (Overseerr / Jellyseerr requests)
 - [ ] TMDB as a source
 - [ ] Chrome Web Store listing

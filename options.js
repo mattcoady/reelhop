@@ -24,19 +24,10 @@ document.addEventListener('DOMContentLoaded', () => {
   const plexNote = $('plexNote');
   const modeSelect = $('preferredMode');
 
-  // Radarr
-  const radarrEnabled = $('radarrEnabled');
-  const radarrOff = $('radarrOff');
-  const radarrBody = $('radarrBody');
-  const radarrUrlInput = $('radarrUrl');
-  const radarrApiKeyInput = $('radarrApiKey');
-  const radarrTestBtn = $('radarrTestBtn');
-  const radarrConn = $('radarrConn');
-  const radarrNote = $('radarrNote');
-  const radarrProfileSelect = $('radarrQualityProfile');
-  const radarrRootSelect = $('radarrRootFolder');
+  // Radarr and Sonarr each own the rest of their card (see wireArrService);
+  // these are the two settings that differ between them.
   const radarrAvailSelect = $('radarrMinAvailability');
-  const radarrSearchOnAdd = $('radarrSearchOnAdd');
+  const sonarrMonitorSelect = $('sonarrMonitor');
 
   // Display + general
   const newTabCheckbox = $('openInNewTab');
@@ -331,16 +322,22 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // Radarr
+  // Radarr and Sonarr
+  //
+  // The two are the same card with different nouns: an address, an API key, a
+  // Connect button that asks Chrome for access to that one host and then loads
+  // the quality profiles and root folders, plus one service-specific setting.
+  // wireArrService builds both from a spec rather than keeping two copies of
+  // two hundred lines that would drift apart.
   // ---------------------------------------------------------------------------
 
-  function hasRadarrAccess(url) {
+  function hasHostAccess(url) {
     return chrome.permissions.contains({ origins: [radarrOriginPattern(url)] }).catch(() => false);
   }
 
-  // Ask Chrome for access to the Radarr host. Resolves true immediately when
-  // it's already granted, otherwise shows Chrome's permission prompt.
-  function requestRadarrAccess(url) {
+  // Ask Chrome for access to the host. Resolves true immediately when it's
+  // already granted, otherwise shows Chrome's permission prompt.
+  function requestHostAccess(url) {
     return chrome.permissions.request({ origins: [radarrOriginPattern(url)] });
   }
 
@@ -372,181 +369,223 @@ document.addEventListener('DOMContentLoaded', () => {
     if (want && Array.from(select.options).some(o => o.value === want)) select.value = want;
   }
 
-  function renderRadarrOptions(profiles, rootFolders, selectedProfile, selectedRoot) {
-    fillSelect(radarrProfileSelect, profiles, p => p.id, p => p.name, selectedProfile, 'Connect to load…');
-    fillSelect(radarrRootSelect, rootFolders, r => r.path, (r) => {
-      const free = formatBytes(r.freeSpace);
-      return free ? `${r.path}  (${free} free)` : r.path;
-    }, selectedRoot, 'Connect to load…');
-  }
-
-  // The dropdowns always show *some* choice once options are loaded; make sure
-  // storage agrees with what is shown, so one-click add works right away.
-  async function syncRadarrChoices(stored) {
-    const shownProfile = radarrProfileSelect.value ? parseInt(radarrProfileSelect.value, 10) : 0;
-    const shownRoot = radarrRootSelect.value || '';
-    const update = {};
-    if ((stored.radarrQualityProfileId || 0) !== shownProfile) update.radarrQualityProfileId = shownProfile;
-    if ((stored.radarrRootFolder || '') !== shownRoot) update.radarrRootFolder = shownRoot;
-    if (Object.keys(update).length > 0) await save(update, { silent: true });
-  }
-
-  function setConn(text, tone) {
-    radarrConn.textContent = text;
-    radarrConn.className = `conn-status ${tone}`;
-    if (!radarrEnabled.checked) setDot('Radarr', '', 'Radarr: turned off');
-    else if (tone === 'ok') setDot('Radarr', 'on', `Radarr: ${text.toLowerCase()}`);
-    else if (tone === 'err') setDot('Radarr', 'err', `Radarr: ${text.toLowerCase()}`);
-    else if (tone === 'warn') setDot('Radarr', 'warn', `Radarr: ${text.toLowerCase()}`);
-    else setDot('Radarr', 'warn', 'Radarr: on, but not connected yet');
-  }
-
-  function radarrFailureMessage(result, url) {
-    if (!result || result.error) return result?.error || 'No response from the extension.';
-    const host = (() => { try { return new URL(url).host; } catch (e) { return url; } })();
-    const messages = {
-      unauthorized: 'Radarr rejected the API key (401). Copy it again from Settings → General → Security.',
-      unreachable: `Could not reach ${host}. Is Radarr running, and is that address reachable from this computer?`,
-      wrong_app: `That looks like ${result.appName}, not Radarr.`,
-      permission: 'Chrome has not granted access to that address yet. Press Connect and accept the prompt.',
-      http: `Radarr answered HTTP ${result.status}. Check the address, including any URL base.`,
-      bad_url: 'That address does not look valid.',
-      no_key: 'Enter your API key first.'
+  // spec: { key: 'radarr', name: 'Radarr', item: 'movies', port: '7878', ... }
+  // The element ids, storage keys and message actions all derive from `key`,
+  // which is what keeps the two cards honest about being the same thing.
+  function wireArrService(spec) {
+    const { key, name, dot, item, port, keyPath } = spec;
+    const el = {
+      enabled: $(`${key}Enabled`),
+      off: $(`${key}Off`),
+      body: $(`${key}Body`),
+      url: $(`${key}Url`),
+      apiKey: $(`${key}ApiKey`),
+      testBtn: $(`${key}TestBtn`),
+      conn: $(`${key}Conn`),
+      note: $(`${key}Note`),
+      profile: $(`${key}QualityProfile`),
+      root: $(`${key}RootFolder`)
     };
-    return messages[result.reason] || 'Could not connect to Radarr.';
-  }
+    const storeKeys = {
+      enabled: `${key}Enabled`,
+      url: `${key}Url`,
+      apiKey: `${key}ApiKey`,
+      searchOnAdd: `${key}SearchOnAdd`,
+      profileId: `${key}QualityProfileId`,
+      rootFolder: `${key}RootFolder`,
+      profiles: `${key}Profiles`,
+      rootFolders: `${key}RootFolders`
+    };
 
-  function connectedLabel(result) {
-    return `Connected to ${result.instanceName || 'Radarr'}${result.version ? ` · v${result.version}` : ''}`;
-  }
-
-  // Reflect the current connection state in the pill next to Connect. With
-  // verify=true (page load, toggle on) it also pings Radarr once.
-  let connCheckSeq = 0;
-  async function refreshRadarrConn({ verify = true } = {}) {
-    const seq = ++connCheckSeq;
-    const url = normalizeRadarrUrl(radarrUrlInput.value);
-    const apiKey = radarrApiKeyInput.value.trim();
-
-    if (!url || !apiKey) {
-      setConn('Not connected', 'muted');
-      return;
+    function renderOptions(profiles, rootFolders, selectedProfile, selectedRoot) {
+      fillSelect(el.profile, profiles, p => p.id, p => p.name, selectedProfile, 'Connect to load…');
+      fillSelect(el.root, rootFolders, r => r.path, (r) => {
+        const free = formatBytes(r.freeSpace);
+        return free ? `${r.path}  (${free} free)` : r.path;
+      }, selectedRoot, 'Connect to load…');
     }
-    const granted = await hasRadarrAccess(url);
-    if (seq !== connCheckSeq) return;
-    if (!granted) {
-      setConn(`Needs access to ${new URL(url).host}`, 'warn');
-      return;
+
+    // The dropdowns always show *some* choice once options are loaded; make
+    // sure storage agrees with what is shown, so one-click add works right away.
+    async function syncChoices(stored) {
+      const shownProfile = el.profile.value ? parseInt(el.profile.value, 10) : 0;
+      const shownRoot = el.root.value || '';
+      const update = {};
+      if ((stored[storeKeys.profileId] || 0) !== shownProfile) update[storeKeys.profileId] = shownProfile;
+      if ((stored[storeKeys.rootFolder] || '') !== shownRoot) update[storeKeys.rootFolder] = shownRoot;
+      if (Object.keys(update).length > 0) await save(update, { silent: true });
     }
-    if (!verify) return;
 
-    setConn('Checking…', 'muted');
-    const result = await chrome.runtime.sendMessage({ action: 'radarrTest', config: { url, apiKey } }).catch((e) => ({ error: e.message }));
-    if (seq !== connCheckSeq) return;
-    if (result && result.ok) {
-      setConn(connectedLabel(result), 'ok');
-    } else {
-      setConn('Connection failed', 'err');
-      showNote(radarrNote, radarrFailureMessage(result, url), 'error', 0);
+    function setConn(text, tone) {
+      el.conn.textContent = text;
+      el.conn.className = `conn-status ${tone}`;
+      if (!el.enabled.checked) setDot(dot, '', `${name}: turned off`);
+      else if (tone === 'ok') setDot(dot, 'on', `${name}: ${text.toLowerCase()}`);
+      else if (tone === 'err') setDot(dot, 'err', `${name}: ${text.toLowerCase()}`);
+      else if (tone === 'warn') setDot(dot, 'warn', `${name}: ${text.toLowerCase()}`);
+      else setDot(dot, 'warn', `${name}: on, but not connected yet`);
     }
-  }
 
-  function syncRadarrBody() {
-    radarrBody.hidden = !radarrEnabled.checked;
-    radarrOff.hidden = radarrEnabled.checked;
-    if (!radarrEnabled.checked) setDot('Radarr', '', 'Radarr: turned off');
-  }
-
-  radarrEnabled.addEventListener('change', () => {
-    syncRadarrBody();
-    if (radarrEnabled.checked) refreshRadarrConn();
-  });
-
-  radarrUrlInput.addEventListener('change', async () => {
-    const raw = radarrUrlInput.value.trim();
-    const url = normalizeRadarrUrl(raw);
-    if (raw && !url) {
-      showNote(radarrNote, 'That address does not look valid. Use something like http://192.168.1.10:7878', 'error', 6000);
-      return;
+    function failureMessage(result, url) {
+      if (!result || result.error) return result?.error || 'No response from the extension.';
+      const host = (() => { try { return new URL(url).host; } catch (e) { return url; } })();
+      const messages = {
+        unauthorized: `${name} rejected the API key (401). Copy it again from Settings → General → Security.`,
+        unreachable: `Could not reach ${host}. Is ${name} running, and is that address reachable from this computer?`,
+        wrong_app: `That looks like ${result.appName}, not ${name}.`,
+        permission: 'Chrome has not granted access to that address yet. Press Connect and accept the prompt.',
+        http: `${name} answered HTTP ${result.status}. Check the address, including any URL base.`,
+        bad_url: 'That address does not look valid.',
+        no_key: 'Enter your API key first.'
+      };
+      return messages[result.reason] || `Could not connect to ${name}.`;
     }
-    hideNote(radarrNote);
-    radarrUrlInput.value = url;
-    await save({ radarrUrl: url });
-    refreshRadarrConn({ verify: false });
-  });
 
-  radarrApiKeyInput.addEventListener('change', async () => {
-    await save({ radarrApiKey: radarrApiKeyInput.value.trim() });
-    refreshRadarrConn({ verify: false });
-  });
-
-  // Connect: grant access to the host, verify the key, load profiles + folders.
-  radarrTestBtn.addEventListener('click', async () => {
-    const url = normalizeRadarrUrl(radarrUrlInput.value);
-    const apiKey = radarrApiKeyInput.value.trim();
-    if (!url) {
-      showNote(radarrNote, 'Enter your Radarr address first, e.g. http://192.168.1.10:7878', 'error', 5000);
-      radarrUrlInput.focus();
-      return;
+    function connectedLabel(result) {
+      return `Connected to ${result.instanceName || name}${result.version ? ` · v${result.version}` : ''}`;
     }
-    if (!apiKey) {
-      showNote(radarrNote, 'Enter your API key first (Radarr → Settings → General → Security).', 'error', 5000);
-      radarrApiKeyInput.focus();
-      return;
-    }
-    radarrUrlInput.value = url;
-    await save({ radarrUrl: url, radarrApiKey: apiKey }, { silent: true });
 
-    radarrTestBtn.disabled = true;
-    radarrTestBtn.textContent = 'Connecting…';
-    connCheckSeq++; // cancel any background check in flight
-    setConn('Connecting…', 'muted');
-    showNote(radarrNote, 'Connecting to Radarr…', 'info', 0);
+    // Reflect the current connection state in the pill next to Connect. With
+    // verify=true (page load, toggle on) it also pings the service once.
+    let connCheckSeq = 0;
+    async function refreshConn({ verify = true } = {}) {
+      const seq = ++connCheckSeq;
+      const url = normalizeRadarrUrl(el.url.value);
+      const apiKey = el.apiKey.value.trim();
 
-    try {
-      const granted = await requestRadarrAccess(url);
+      if (!url || !apiKey) {
+        setConn('Not connected', 'muted');
+        return;
+      }
+      const granted = await hasHostAccess(url);
+      if (seq !== connCheckSeq) return;
       if (!granted) {
         setConn(`Needs access to ${new URL(url).host}`, 'warn');
-        showNote(radarrNote, `Access to ${new URL(url).host} was declined. ReelHop can't reach Radarr without it.`, 'error', 8000);
         return;
       }
+      if (!verify) return;
 
-      const result = await chrome.runtime.sendMessage({ action: 'radarrTest', config: { url, apiKey } }).catch((e) => ({ error: e.message }));
-      if (!result || result.error || !result.ok) {
-        setConn('Connection failed', 'err');
-        showNote(radarrNote, radarrFailureMessage(result, url), 'error', 9000);
-        return;
-      }
-
-      const stored = await chrome.storage.local.get(['radarrQualityProfileId', 'radarrRootFolder']);
-      renderRadarrOptions(result.profiles, result.rootFolders, stored.radarrQualityProfileId, stored.radarrRootFolder);
-      await save({ radarrProfiles: result.profiles, radarrRootFolders: result.rootFolders }, { silent: true });
-      await syncRadarrChoices(stored);
-
-      setConn(connectedLabel(result), 'ok');
-
-      const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
-      const lines = [
-        [{ text: '✓ Connected to ' }, { text: result.instanceName || 'Radarr', strong: true },
-         { text: result.version ? ` (Radarr v${result.version})` : '' }],
-        `${plural(result.profiles.length, 'quality profile')}, ${plural(result.rootFolders.length, 'root folder')} loaded.`
-      ];
-      if (result.profiles.length === 0 || result.rootFolders.length === 0) {
-        lines.push('Radarr needs at least one quality profile and one root folder before ReelHop can add movies.');
+      setConn('Checking…', 'muted');
+      const result = await chrome.runtime.sendMessage({ action: `${key}Test`, config: { url, apiKey } })
+        .catch((e) => ({ error: e.message }));
+      if (seq !== connCheckSeq) return;
+      if (result && result.ok) {
+        setConn(connectedLabel(result), 'ok');
       } else {
-        const profileName = radarrProfileSelect.options[radarrProfileSelect.selectedIndex]?.textContent || '';
-        lines.push([{ text: 'Adding with ' }, { text: profileName, strong: true }, { text: ' into ' },
-          { text: radarrRootSelect.value, strong: true }, { text: '. Change either below if needed.' }]);
+        setConn('Connection failed', 'err');
+        showNote(el.note, failureMessage(result, url), 'error', 0);
       }
-      showNote(radarrNote, lines, 'success', 12000);
-    } catch (e) {
-      console.error('Radarr connect error:', e);
-      setConn('Connection failed', 'err');
-      showNote(radarrNote, e.message, 'error', 6000);
-    } finally {
-      radarrTestBtn.disabled = false;
-      radarrTestBtn.textContent = 'Connect';
     }
+
+    function syncBody() {
+      el.body.hidden = !el.enabled.checked;
+      el.off.hidden = el.enabled.checked;
+      if (!el.enabled.checked) setDot(dot, '', `${name}: turned off`);
+    }
+
+    el.enabled.addEventListener('change', () => {
+      syncBody();
+      if (el.enabled.checked) refreshConn();
+    });
+
+    el.url.addEventListener('change', async () => {
+      const raw = el.url.value.trim();
+      const url = normalizeRadarrUrl(raw);
+      if (raw && !url) {
+        showNote(el.note, `That address does not look valid. Use something like http://192.168.1.10:${port}`, 'error', 6000);
+        return;
+      }
+      hideNote(el.note);
+      el.url.value = url;
+      await save({ [storeKeys.url]: url });
+      refreshConn({ verify: false });
+    });
+
+    el.apiKey.addEventListener('change', async () => {
+      await save({ [storeKeys.apiKey]: el.apiKey.value.trim() });
+      refreshConn({ verify: false });
+    });
+
+    el.testBtn.addEventListener('click', async () => {
+      const url = normalizeRadarrUrl(el.url.value);
+      const apiKey = el.apiKey.value.trim();
+      if (!url) {
+        showNote(el.note, `Enter your ${name} address first, e.g. http://192.168.1.10:${port}`, 'error', 5000);
+        el.url.focus();
+        return;
+      }
+      if (!apiKey) {
+        showNote(el.note, `Enter your API key first (${keyPath}).`, 'error', 5000);
+        el.apiKey.focus();
+        return;
+      }
+      el.url.value = url;
+      await save({ [storeKeys.url]: url, [storeKeys.apiKey]: apiKey }, { silent: true });
+
+      el.testBtn.disabled = true;
+      el.testBtn.textContent = 'Connecting…';
+      connCheckSeq++; // cancel any background check in flight
+      setConn('Connecting…', 'muted');
+      showNote(el.note, `Connecting to ${name}…`, 'info', 0);
+
+      try {
+        const granted = await requestHostAccess(url);
+        if (!granted) {
+          setConn(`Needs access to ${new URL(url).host}`, 'warn');
+          showNote(el.note, `Access to ${new URL(url).host} was declined. ReelHop can't reach ${name} without it.`, 'error', 8000);
+          return;
+        }
+
+        const result = await chrome.runtime.sendMessage({ action: `${key}Test`, config: { url, apiKey } })
+          .catch((e) => ({ error: e.message }));
+        if (!result || result.error || !result.ok) {
+          setConn('Connection failed', 'err');
+          showNote(el.note, failureMessage(result, url), 'error', 9000);
+          return;
+        }
+
+        const stored = await chrome.storage.local.get([storeKeys.profileId, storeKeys.rootFolder]);
+        renderOptions(result.profiles, result.rootFolders, stored[storeKeys.profileId], stored[storeKeys.rootFolder]);
+        await save({ [storeKeys.profiles]: result.profiles, [storeKeys.rootFolders]: result.rootFolders }, { silent: true });
+        await syncChoices(stored);
+
+        setConn(connectedLabel(result), 'ok');
+
+        const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+        const lines = [
+          [{ text: '✓ Connected to ' }, { text: result.instanceName || name, strong: true },
+           { text: result.version ? ` (${name} v${result.version})` : '' }],
+          `${plural(result.profiles.length, 'quality profile')}, ${plural(result.rootFolders.length, 'root folder')} loaded.`
+        ];
+        if (result.profiles.length === 0 || result.rootFolders.length === 0) {
+          lines.push(`${name} needs at least one quality profile and one root folder before ReelHop can add ${item}.`);
+        } else {
+          const profileName = el.profile.options[el.profile.selectedIndex]?.textContent || '';
+          lines.push([{ text: 'Adding with ' }, { text: profileName, strong: true }, { text: ' into ' },
+            { text: el.root.value, strong: true }, { text: '. Change either below if needed.' }]);
+        }
+        showNote(el.note, lines, 'success', 12000);
+      } catch (e) {
+        console.error(`${name} connect error:`, e);
+        setConn('Connection failed', 'err');
+        showNote(el.note, e.message, 'error', 6000);
+      } finally {
+        el.testBtn.disabled = false;
+        el.testBtn.textContent = 'Connect';
+      }
+    });
+
+    // What the load block needs to bring the card up to date.
+    return { key, name, dot, el, storeKeys, renderOptions, syncChoices, refreshConn, syncBody, searchOnAdd: $(`${key}SearchOnAdd`) };
+  }
+
+  const radarr = wireArrService({
+    key: 'radarr', name: 'Radarr', dot: 'Radarr', item: 'movies', port: '7878',
+    keyPath: 'Radarr → Settings → General → Security'
+  });
+  const sonarr = wireArrService({
+    key: 'sonarr', name: 'Sonarr', dot: 'Sonarr', item: 'series', port: '8989',
+    keyPath: 'Sonarr → Settings → General → Security'
   });
 
   // ---------------------------------------------------------------------------
@@ -792,7 +831,16 @@ document.addEventListener('DOMContentLoaded', () => {
     'radarrMinAvailability',
     'radarrSearchOnAdd',
     'radarrProfiles',
-    'radarrRootFolders'
+    'radarrRootFolders',
+    'sonarrEnabled',
+    'sonarrUrl',
+    'sonarrApiKey',
+    'sonarrQualityProfileId',
+    'sonarrRootFolder',
+    'sonarrMonitor',
+    'sonarrSearchOnAdd',
+    'sonarrProfiles',
+    'sonarrRootFolders'
   ], async (items) => {
     modeSelect.value = items.preferredMode || 'server_first';
     newTabCheckbox.checked = items.openInNewTab !== false;
@@ -804,22 +852,30 @@ document.addEventListener('DOMContentLoaded', () => {
     showPosterFilterCheckbox.checked = items.showPosterFilter !== false;
     showImdbButtonCheckbox.checked = items.showImdbButton !== false;
 
-    radarrEnabled.checked = items.radarrEnabled === true;
-    radarrUrlInput.value = items.radarrUrl || '';
-    radarrApiKeyInput.value = items.radarrApiKey || '';
-    radarrAvailSelect.value = items.radarrMinAvailability || 'released';
-    radarrSearchOnAdd.checked = items.radarrSearchOnAdd !== false;
-    renderRadarrOptions(items.radarrProfiles || [], items.radarrRootFolders || [],
-      items.radarrQualityProfileId, items.radarrRootFolder);
-    if ((items.radarrProfiles || []).length > 0 || (items.radarrRootFolders || []).length > 0) {
-      syncRadarrChoices(items);
+    // Both *arr cards restore the same way; only the extra setting differs.
+    for (const service of [radarr, sonarr]) {
+      const k = service.storeKeys;
+      service.el.enabled.checked = items[k.enabled] === true;
+      service.el.url.value = items[k.url] || '';
+      service.el.apiKey.value = items[k.apiKey] || '';
+      service.searchOnAdd.checked = items[k.searchOnAdd] !== false;
+      service.renderOptions(items[k.profiles] || [], items[k.rootFolders] || [],
+        items[k.profileId], items[k.rootFolder]);
+      if ((items[k.profiles] || []).length > 0 || (items[k.rootFolders] || []).length > 0) {
+        service.syncChoices(items);
+      }
+      service.syncBody();
     }
-    syncRadarrBody();
+    radarrAvailSelect.value = items.radarrMinAvailability || 'released';
+    sonarrMonitorSelect.value = items.sonarrMonitor || 'all';
 
     refreshSourceDots();
     refreshPlexAccount();
     refreshPlexIndex();
-    if (radarrEnabled.checked) refreshRadarrConn(); else setDot('Radarr', '', 'Radarr: turned off');
+    for (const service of [radarr, sonarr]) {
+      if (service.el.enabled.checked) service.refreshConn();
+      else setDot(service.dot, '', `${service.name}: turned off`);
+    }
     refreshCacheCount();
     updateNav();
     if (location.hash.length > 1) focusSection(location.hash.slice(1));

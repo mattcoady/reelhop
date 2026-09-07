@@ -152,35 +152,52 @@
     return 'Search';
   }
 
-  // What a Radarr film-page button should say. `tone` picks the chip colour.
-  function radarrView(state) {
+  // What a library button should say. Radarr manages movies and Sonarr manages
+  // shows, but a title is only ever one of the two, so a film page has a single
+  // button and this decides which service it is talking about. `tone` picks the
+  // chip colour.
+  function libraryView(state) {
     const s = state || { status: 'checking' };
+    const show = s.destination === 'sonarr';
+    const app = show ? 'Sonarr' : 'Radarr';
+    const item = show ? 'series' : 'movie';
+
     switch (s.status) {
       case 'checking':
-        return { label: 'Radarr', badge: 'Checking…', tone: 'checking', title: 'Checking Radarr…' };
+        return { label: app, badge: 'Checking…', tone: 'checking', title: `Checking ${app}…` };
       case 'adding':
-        return { label: 'Add to Radarr', badge: 'Adding…', tone: 'checking', title: 'Adding to Radarr…' };
+        return { label: `Add to ${app}`, badge: 'Adding…', tone: 'checking', title: `Adding to ${app}…` };
       case 'in_library': {
-        const badge = s.justAdded ? 'Added' : s.hasFile ? 'Downloaded' : s.monitored ? 'Wanted' : 'Unmonitored';
-        const tone = (s.justAdded || s.hasFile) ? 'ok' : s.monitored ? 'warn' : 'neutral';
-        return { label: 'Open in Radarr', badge, tone, title: `In your Radarr library (${badge.toLowerCase()})` };
+        // Sonarr counts episodes, so a series can be half here.
+        const badge = s.justAdded ? 'Added'
+          : s.hasFile ? 'Downloaded'
+          : s.partial ? 'Partial'
+          : s.monitored ? 'Wanted'
+          : 'Unmonitored';
+        const tone = (s.justAdded || s.hasFile) ? 'ok'
+          : (s.partial || s.monitored) ? 'warn'
+          : 'neutral';
+        const detail = s.partial && s.episodeCount
+          ? `${s.episodeFileCount} of ${s.episodeCount} episodes`
+          : badge.toLowerCase();
+        return { label: `Open in ${app}`, badge, tone, title: `In your ${app} library (${detail})` };
       }
       case 'missing':
         return s.canAdd
-          ? { label: 'Add to Radarr', badge: 'Add', tone: 'action', title: 'Add this movie to Radarr with your default profile and root folder' }
-          : { label: 'Add in Radarr', badge: 'Not added', tone: 'neutral', title: 'Open Radarr to add this movie' };
+          ? { label: `Add to ${app}`, badge: 'Add', tone: 'action', title: `Add this ${item} to ${app} with your default profile and root folder` }
+          : { label: `Add in ${app}`, badge: 'Not added', tone: 'neutral', title: `Open ${app} to add this ${item}` };
       case 'not_found':
-        return { label: 'Search in Radarr', badge: 'Not found', tone: 'neutral', title: 'Radarr could not match this title; opens a Radarr search' };
+        return { label: `Search in ${app}`, badge: 'Not found', tone: 'neutral', title: `${app} could not match this title; opens a ${app} search` };
       case 'unauthorized':
-        return { label: 'Radarr', badge: 'Bad API key', tone: 'err', title: 'Radarr rejected the API key. Check ReelHop settings.' };
+        return { label: app, badge: 'Bad API key', tone: 'err', title: `${app} rejected the API key. Check ReelHop settings.` };
       case 'permission':
-        return { label: 'Radarr', badge: 'Needs access', tone: 'err', title: 'Open ReelHop settings and press Save to grant access to your Radarr URL.' };
+        return { label: app, badge: 'Needs access', tone: 'err', title: `Open ReelHop settings and press Connect to grant access to your ${app} URL.` };
       case 'unconfigured':
-        return { label: 'Radarr', badge: 'Setup', tone: 'err', title: s.message || 'Finish Radarr setup in ReelHop settings.' };
+        return { label: app, badge: 'Setup', tone: 'err', title: s.message || `Finish ${app} setup in ReelHop settings.` };
       case 'error':
-        return { label: 'Radarr', badge: 'Failed', tone: 'err', title: s.message || 'Radarr returned an error' };
+        return { label: app, badge: 'Failed', tone: 'err', title: s.message || `${app} returned an error` };
       default:
-        return { label: 'Radarr', badge: 'Unreachable', tone: 'err', title: s.message ? `Radarr: ${s.message}` : 'Could not reach Radarr' };
+        return { label: app, badge: 'Unreachable', tone: 'err', title: s.message ? `${app}: ${s.message}` : `Could not reach ${app}` };
     }
   }
 
@@ -278,7 +295,7 @@
     radarrOriginPattern,
     radarrHasFile,
     badgeLabelFor,
-    radarrView,
+    libraryView,
     posterAddView,
     posterSizeClass,
     filterHides,

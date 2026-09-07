@@ -32,6 +32,7 @@
         <div class="nav-title">Destinations</div>
         <a class="nav-link" href="#plex"><span class="dest-dot" id="navDotPlex"></span>Plex</a>
         <a class="nav-link" href="#radarr"><span class="dest-dot" id="navDotRadarr"></span>Radarr</a>
+        <a class="nav-link" href="#sonarr"><span class="dest-dot" id="navDotSonarr"></span>Sonarr</a>
       </div>
       <div class="nav-group">
         <div class="nav-title">Sources</div>
@@ -224,6 +225,96 @@
           <p class="hint">
             With a profile and root folder chosen, the on-page button adds a movie in one click.
             Without them it opens Radarr's add page instead.
+          </p>
+        </div>
+      </section>
+
+      <!-- Sonarr -->
+      <section class="card" id="sonarr">
+        <div class="card-head">
+          <span class="dest-dot" id="dotSonarr"></span>
+          <h3>Sonarr</h3>
+          <label class="switch">
+            <input type="checkbox" id="sonarrEnabled" data-key="sonarrEnabled" aria-label="Enable Sonarr">
+            <span class="track"></span>
+            <span class="switch-label">Enabled</span>
+          </label>
+        </div>
+        <div class="card-body" id="sonarrOff">
+          <p class="hint flush">
+            Adds an <strong>Add to Sonarr</strong> button to TV pages, showing whether the series is already in
+            your library and how much of it has landed. Turn it on to set it up.
+          </p>
+        </div>
+        <div class="card-body" id="sonarrBody" hidden>
+          <div class="form-grid">
+            <div class="form-group">
+              <label for="sonarrUrl">Sonarr address</label>
+              <input type="text" id="sonarrUrl" placeholder="http://192.168.1.10:8989" autocomplete="off" spellcheck="false">
+              <p class="hint">Include a URL base if Sonarr has one, e.g. <strong>…/sonarr</strong>.</p>
+            </div>
+            <div class="form-group">
+              <label for="sonarrApiKey">API key</label>
+              <input type="password" id="sonarrApiKey" placeholder="Sonarr → Settings → General → Security" autocomplete="off">
+            </div>
+          </div>
+
+          <div class="connect-row">
+            <button id="sonarrTestBtn" class="btn primary">Connect</button>
+            <span class="conn-status muted" id="sonarrConn">Not connected</span>
+          </div>
+          <p class="hint">
+            Connecting asks Chrome to let ReelHop talk to this address, and nothing else, then loads your
+            quality profiles and root folders.
+          </p>
+
+          <div class="note" id="sonarrNote"></div>
+
+          <div class="form-grid">
+            <div class="form-group">
+              <label for="sonarrQualityProfile">Quality profile</label>
+              <select id="sonarrQualityProfile" data-key="sonarrQualityProfileId" data-type="int">
+                <option value="">Connect to load…</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="sonarrRootFolder">Root folder</label>
+              <select id="sonarrRootFolder" data-key="sonarrRootFolder">
+                <option value="">Connect to load…</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="setting-list">
+            <div class="setting-row">
+              <div class="setting-text">
+                <div class="setting-title">Monitor</div>
+                <div class="setting-desc">Which episodes Sonarr should watch for when a series is added.</div>
+              </div>
+              <select id="sonarrMonitor" data-key="sonarrMonitor">
+                <option value="all">All episodes</option>
+                <option value="future">Future episodes</option>
+                <option value="firstSeason">First season</option>
+                <option value="lastSeason">Latest season</option>
+                <option value="pilot">Pilot only</option>
+                <option value="none">None</option>
+              </select>
+            </div>
+            <div class="setting-row">
+              <div class="setting-text">
+                <div class="setting-title">Search on add</div>
+                <div class="setting-desc">Start searching for missing episodes as soon as a series is added.</div>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="sonarrSearchOnAdd" data-key="sonarrSearchOnAdd" checked aria-label="Search on add">
+                <span class="track"></span>
+              </label>
+            </div>
+          </div>
+
+          <p class="hint">
+            With a profile and root folder chosen, the on-page button adds a series in one click.
+            Without them it opens Sonarr's add page instead.
           </p>
         </div>
       </section>

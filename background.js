@@ -5,7 +5,7 @@
 // single Radarr origin the user grants at runtime from the settings page.
 //
 // Sections: Plex (resolve + test), Plex library index (poster badges), Plex
-// sign-in (PIN flow), Radarr, settings page, router.
+// sign-in (PIN flow), Radarr, Sonarr, settings page, router.
 //
 // Destinations each get their own section and their own message actions
 // (plexResolve, radarrResolve, radarrAdd, ...). The content script asks for
@@ -916,7 +916,12 @@ async function radarrLookup(movie, cfg) {
 // user adds movies through this extension, and Radarr grabs files on its own.
 // ---------------------------------------------------------------------------
 
-const RADARR_INDEX_TTL = 5 * 60 * 1000;
+// GET /movie returns every field of every movie, so a large library is
+// several MB. Adds already drop the index (radarrAdd calls dropRadarrIndex),
+// and so does any change to the Radarr settings, which covers everything
+// ReelHop itself can do. The timer only needs to catch changes made in Radarr
+// directly, so it is generous rather than eager.
+const RADARR_INDEX_TTL = 30 * 60 * 1000;
 const RADARR_LIST_TIMEOUT = 20000; // a big library is a few MB over the LAN
 
 let radarrIndexMemo = null;
@@ -1149,6 +1154,350 @@ async function radarrTest(input) {
 }
 
 // ===========================================================================
+// Sonarr
+//
+// Sonarr is Radarr's shape with different nouns: /series instead of /movie,
+// tvdbId instead of tmdbId, seasons instead of a single file. The content
+// script asks about a show exactly the way it asks about a movie, and this
+// section answers in the same result shape so the button painter is shared.
+// ===========================================================================
+
+const SONARR_TIMEOUT = 8000;
+const SONARR_INDEX_TTL = 30 * 60 * 1000;
+const SONARR_LIST_TIMEOUT = 20000;
+
+let sonarrIndexMemo = null;
+let sonarrIndexPromise = null;
+
+async function getSonarrConfig() {
+  const items = await chrome.storage.local.get([
+    'sonarrEnabled', 'sonarrUrl', 'sonarrApiKey', 'sonarrQualityProfileId',
+    'sonarrRootFolder', 'sonarrMonitor', 'sonarrSearchOnAdd'
+  ]);
+  const url = normalizeRadarrUrl(items.sonarrUrl); // same http(s) normalization
+  return {
+    enabled: items.sonarrEnabled === true && !!url,
+    url,
+    apiKey: (items.sonarrApiKey || '').trim(),
+    qualityProfileId: parseInt(items.sonarrQualityProfileId, 10) || 0,
+    rootFolder: items.sonarrRootFolder || '',
+    monitor: items.sonarrMonitor || 'all',
+    searchOnAdd: items.sonarrSearchOnAdd !== false
+  };
+}
+
+function hasSonarrPermission(url) {
+  return hasRadarrPermission(url); // same optional-origin check
+}
+
+function sonarrFetch(cfg, path, options = {}, timeout = SONARR_TIMEOUT) {
+  const headers = { 'Accept': 'application/json', 'X-Api-Key': cfg.apiKey };
+  if (options.body) headers['Content-Type'] = 'application/json';
+  return fetchWithTimeout(`${cfg.url}/api/v3${path}`, { ...options, headers }, timeout);
+}
+
+function sonarrSeriesUrl(cfg, series) {
+  const slug = series && series.titleSlug ? String(series.titleSlug) : '';
+  return slug ? `${cfg.url}/series/${encodeURIComponent(slug)}` : cfg.url;
+}
+
+function sonarrAddPageUrl(cfg, term) {
+  return `${cfg.url}/add/new?term=${encodeURIComponent(term)}`;
+}
+
+function sonarrSearchTerm(show) {
+  return sanitizeText(show.year ? `${show.title} ${show.year}` : show.title);
+}
+
+// Sonarr counts episodes rather than tracking one file, so "downloaded" means
+// every episode it is monitoring is on disk.
+function sonarrStats(series) {
+  const stats = (series && series.statistics) || {};
+  const total = stats.episodeFileCount || 0;
+  const wanted = stats.episodeCount || 0;
+  return {
+    episodeFileCount: total,
+    episodeCount: wanted,
+    complete: wanted > 0 && total >= wanted
+  };
+}
+
+function sonarrResult(status, series, extra = {}) {
+  const out = { destination: 'sonarr', status, ...extra };
+  if (series) {
+    const stats = sonarrStats(series);
+    out.title = series.title || '';
+    out.year = series.year || 0;
+    out.tvdbId = series.tvdbId || 0;
+    out.titleSlug = series.titleSlug || '';
+    out.sonarrId = series.id || 0;
+    out.monitored = !!series.monitored;
+    out.episodeFileCount = stats.episodeFileCount;
+    out.episodeCount = stats.episodeCount;
+    out.hasFile = stats.complete;
+    out.partial = stats.episodeFileCount > 0 && !stats.complete;
+  }
+  return out;
+}
+
+function sonarrFailure(cfg, e) {
+  if (e instanceof RadarrHttpError) {
+    if (e.status === 401) return sonarrResult('unauthorized', null, { url: cfg.url });
+    return sonarrResult('error', null, { url: cfg.url, message: e.message });
+  }
+  return sonarrResult('unreachable', null, { url: cfg.url, message: (e && e.message) || 'Could not reach Sonarr' });
+}
+
+// Sonarr's lookup takes tvdb: or an imdb: term, and a plain title otherwise.
+async function sonarrLookup(show, cfg) {
+  const term = show.imdbId ? `imdb:${show.imdbId}` : sonarrSearchTerm(show);
+  const res = await sonarrFetch(cfg, `/series/lookup?term=${encodeURIComponent(term)}`);
+  if (!res.ok) throw new RadarrHttpError(res.status);
+  const results = await res.json();
+  const list = Array.isArray(results) ? results : [];
+
+  let match = null;
+  if (show.imdbId) {
+    match = list.find(x => x.imdbId === show.imdbId) || list[0] || null;
+  } else {
+    const wantTitle = normalize(show.title);
+    match = list.find(x => normalize(x.title || '') === wantTitle && yearsClose(x.year, show.year)) || null;
+  }
+  if (!match) return { status: 'not_found', series: null };
+  if (match.id > 0) return { status: 'in_library', series: match };
+
+  // A lookup result only sometimes carries the library id.
+  if (match.tvdbId) {
+    const check = await sonarrFetch(cfg, `/series?tvdbId=${encodeURIComponent(match.tvdbId)}`);
+    if (check.ok) {
+      const existing = await check.json();
+      if (Array.isArray(existing) && existing.length > 0) {
+        return { status: 'in_library', series: existing[0] };
+      }
+    }
+  }
+  return { status: 'missing', series: match };
+}
+
+async function sonarrResolve(show) {
+  const cfg = await getSonarrConfig();
+  if (!cfg.enabled) return sonarrResult('disabled');
+  if (!cfg.apiKey) return sonarrResult('unconfigured', null, { url: cfg.url, message: 'Add your Sonarr API key in ReelHop settings.' });
+  if (!(await hasSonarrPermission(cfg.url))) return sonarrResult('permission', null, { url: cfg.url });
+
+  const canAdd = cfg.qualityProfileId > 0 && !!cfg.rootFolder;
+  try {
+    const found = await sonarrLookup(show, cfg);
+    if (found.status === 'in_library') {
+      return sonarrResult('in_library', found.series, { url: sonarrSeriesUrl(cfg, found.series) });
+    }
+    if (found.status === 'missing') {
+      const term = show.imdbId ? `imdb:${show.imdbId}` : sonarrSearchTerm(show);
+      return sonarrResult('missing', found.series, { url: sonarrAddPageUrl(cfg, term), canAdd });
+    }
+    return sonarrResult('not_found', null, { url: sonarrAddPageUrl(cfg, sonarrSearchTerm(show)) });
+  } catch (e) {
+    return sonarrFailure(cfg, e);
+  }
+}
+
+async function sonarrAdd(show) {
+  const cfg = await getSonarrConfig();
+  if (!cfg.enabled) return sonarrResult('disabled');
+  if (!cfg.apiKey) return sonarrResult('unconfigured', null, { url: cfg.url, message: 'Add your Sonarr API key in ReelHop settings.' });
+  if (!(await hasSonarrPermission(cfg.url))) return sonarrResult('permission', null, { url: cfg.url });
+  if (!(cfg.qualityProfileId > 0) || !cfg.rootFolder) {
+    return sonarrResult('unconfigured', null, {
+      url: sonarrAddPageUrl(cfg, sonarrSearchTerm(show)),
+      message: 'Choose a quality profile and root folder in ReelHop settings first.'
+    });
+  }
+
+  try {
+    const found = await sonarrLookup(show, cfg);
+    if (found.status === 'in_library') {
+      return sonarrResult('in_library', found.series, { url: sonarrSeriesUrl(cfg, found.series), alreadyAdded: true });
+    }
+    if (found.status !== 'missing') {
+      return sonarrResult('not_found', null, { url: sonarrAddPageUrl(cfg, sonarrSearchTerm(show)) });
+    }
+
+    const body = {
+      ...found.series,
+      id: 0,
+      qualityProfileId: cfg.qualityProfileId,
+      rootFolderPath: cfg.rootFolder,
+      monitored: true,
+      seasonFolder: true,
+      addOptions: {
+        monitor: cfg.monitor,
+        searchForMissingEpisodes: cfg.searchOnAdd,
+        searchForCutoffUnmetEpisodes: false
+      }
+    };
+    const res = await sonarrFetch(cfg, '/series', { method: 'POST', body: JSON.stringify(body) }, 15000);
+
+    if (res.status === 400) {
+      const errors = await res.json().catch(() => null);
+      const message = Array.isArray(errors)
+        ? errors.map(e => e && e.errorMessage).filter(Boolean).join(' ')
+        : 'Sonarr rejected the series.';
+      if (/already/i.test(message)) {
+        const again = await sonarrLookup(show, cfg);
+        if (again.status === 'in_library') {
+          return sonarrResult('in_library', again.series, { url: sonarrSeriesUrl(cfg, again.series), alreadyAdded: true });
+        }
+      }
+      return sonarrResult('error', found.series, { url: sonarrAddPageUrl(cfg, sonarrSearchTerm(show)), message });
+    }
+    if (!res.ok) throw new RadarrHttpError(res.status);
+
+    const added = await res.json();
+    await dropSonarrIndex();
+    return sonarrResult('in_library', added, { url: sonarrSeriesUrl(cfg, added), justAdded: true });
+  } catch (e) {
+    return sonarrFailure(cfg, e);
+  }
+}
+
+function dropSonarrIndex() {
+  sonarrIndexMemo = null;
+  return chrome.storage.session.remove('sonarrIndex').catch(() => {});
+}
+
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && Object.keys(changes).some(k => k.startsWith('sonarr'))) dropSonarrIndex();
+});
+
+function sonarrEntryFrom(series) {
+  const t = normalize(series.title || '');
+  if (!t) return null;
+  const stats = sonarrStats(series);
+  const entry = {
+    t,
+    y: parseInt(series.year, 10) || 0,
+    id: series.id || 0,
+    slug: series.titleSlug || '',
+    file: stats.complete,
+    mon: !!series.monitored
+  };
+  const o = normalize(series.sortTitle || '');
+  if (o && o !== t) entry.o = o;
+  return entry;
+}
+
+async function getSonarrIndex(cfg) {
+  const fresh = (idx) => idx && idx.url === cfg.url && Date.now() - idx.timestamp < SONARR_INDEX_TTL;
+  if (fresh(sonarrIndexMemo)) return sonarrIndexMemo;
+
+  if (!sonarrIndexMemo) {
+    try {
+      const { sonarrIndex } = await chrome.storage.session.get('sonarrIndex');
+      if (fresh(sonarrIndex)) {
+        sonarrIndexMemo = { ...sonarrIndex, byTitle: indexByTitle(sonarrIndex.entries) };
+        return sonarrIndexMemo;
+      }
+    } catch (e) { /* session storage unavailable */ }
+  }
+
+  if (!sonarrIndexPromise) {
+    sonarrIndexPromise = (async () => {
+      const res = await sonarrFetch(cfg, '/series', {}, SONARR_LIST_TIMEOUT);
+      if (!res.ok) throw new RadarrHttpError(res.status);
+      const data = await res.json();
+      const entries = [];
+      for (const series of Array.isArray(data) ? data : []) {
+        const entry = sonarrEntryFrom(series);
+        if (entry) entries.push(entry);
+      }
+      const index = { timestamp: Date.now(), url: cfg.url, entries };
+      sonarrIndexMemo = { ...index, byTitle: indexByTitle(entries) };
+      try {
+        await chrome.storage.session.set({ sonarrIndex: index });
+      } catch (e) {
+        console.warn('[ReelHop] Could not store the Sonarr index (too large?):', e);
+      }
+      return sonarrIndexMemo;
+    })().finally(() => { sonarrIndexPromise = null; });
+  }
+  return sonarrIndexPromise;
+}
+
+// The same batch answer Radarr gives, for shows.
+async function sonarrLibraryMatch(shows) {
+  const cfg = await getSonarrConfig();
+  if (!cfg.enabled) return { ok: false, reason: 'disabled' };
+  if (!cfg.apiKey) return { ok: false, reason: 'unconfigured', url: cfg.url };
+  if (!(await hasSonarrPermission(cfg.url))) return { ok: false, reason: 'permission', url: cfg.url };
+
+  let index;
+  try {
+    index = await getSonarrIndex(cfg);
+  } catch (e) {
+    const failure = sonarrFailure(cfg, e);
+    return { ok: false, reason: failure.status, url: cfg.url, message: failure.message };
+  }
+
+  const matches = {};
+  for (const show of Array.isArray(shows) ? shows : []) {
+    if (!show || !show.key) continue;
+    const entry = matchLibraryEntry(index, show);
+    if (!entry) continue;
+    matches[show.key] = {
+      status: 'in_library',
+      hasFile: entry.file,
+      monitored: entry.mon,
+      url: entry.slug ? `${cfg.url}/series/${encodeURIComponent(entry.slug)}` : cfg.url
+    };
+  }
+  return {
+    ok: true,
+    matches,
+    indexed: index.entries.length,
+    canAdd: cfg.qualityProfileId > 0 && !!cfg.rootFolder,
+    addUrlBase: `${cfg.url}/add/new?term=`
+  };
+}
+
+// Settings "Connect": verify URL + key, and fetch the options the add flow needs.
+async function sonarrTest(input) {
+  const cfg = { url: normalizeRadarrUrl(input.url), apiKey: (input.apiKey || '').trim() };
+  if (!cfg.url) return { ok: false, reason: 'bad_url' };
+  if (!cfg.apiKey) return { ok: false, reason: 'no_key' };
+  if (!(await hasSonarrPermission(cfg.url))) return { ok: false, reason: 'permission', url: cfg.url };
+
+  try {
+    const statusRes = await sonarrFetch(cfg, '/system/status');
+    if (statusRes.status === 401) return { ok: false, reason: 'unauthorized' };
+    if (!statusRes.ok) return { ok: false, reason: 'http', status: statusRes.status };
+    const status = await statusRes.json();
+    if (status.appName && status.appName !== 'Sonarr') {
+      return { ok: false, reason: 'wrong_app', appName: status.appName };
+    }
+
+    const [profilesRes, rootsRes] = await Promise.all([
+      sonarrFetch(cfg, '/qualityprofile'),
+      sonarrFetch(cfg, '/rootfolder')
+    ]);
+    const profiles = profilesRes.ok ? (await profilesRes.json()).map(p => ({ id: p.id, name: p.name })) : [];
+    const rootFolders = rootsRes.ok
+      ? (await rootsRes.json()).map(r => ({ id: r.id, path: r.path, freeSpace: r.freeSpace }))
+      : [];
+
+    return {
+      ok: true,
+      url: cfg.url,
+      version: status.version || '',
+      instanceName: status.instanceName || 'Sonarr',
+      profiles,
+      rootFolders
+    };
+  } catch (e) {
+    return { ok: false, reason: 'unreachable', message: (e && e.message) || '' };
+  }
+}
+
+// ===========================================================================
 // Settings page
 // ===========================================================================
 
@@ -1168,6 +1517,16 @@ async function openOptions(section) {
 
 // No default popup: clicking the toolbar icon opens the settings tab.
 chrome.action.onClicked.addListener(() => { openOptions(); });
+
+// A fresh install does nothing visible otherwise: the buttons only appear on
+// film pages, and Plex deep links need a sign-in. Open the settings page once
+// so the first thing a new user sees is how to connect something. Updates are
+// deliberately silent — nobody wants a tab on every auto-update.
+chrome.runtime.onInstalled.addListener(async (details) => {
+  if (details.reason !== 'install') return;
+  await chrome.storage.local.set({ installedAt: Date.now() });
+  openOptions('plex');
+});
 
 // ===========================================================================
 // Message router
@@ -1217,6 +1576,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         case 'radarrTest':
           sendResponse(await radarrTest(msg.config || {}));
+          break;
+        case 'sonarrResolve':
+          sendResponse(await sonarrResolve(msg.movie));
+          break;
+        case 'sonarrAdd':
+          sendResponse(await sonarrAdd(msg.movie));
+          break;
+        case 'sonarrLibraryMatch':
+          sendResponse(await sonarrLibraryMatch(msg.films));
+          break;
+        case 'sonarrTest':
+          sendResponse(await sonarrTest(msg.config || {}));
           break;
         case 'openOptions':
           // Lets an on-page "Needs access" button open the settings page,

@@ -126,7 +126,7 @@ eq('an on-server Plex badge', R.badgeLabelFor('server'), 'On Server');
 eq('a Discover badge', R.badgeLabelFor('discover'), 'Discover');
 eq('anything else is a search', R.badgeLabelFor('whatever'), 'Search');
 
-const view = (state) => R.radarrView(state);
+const view = (state) => R.libraryView(state);
 eq('a downloaded film reads Downloaded', view({ status: 'in_library', hasFile: true, monitored: true }).badge, 'Downloaded');
 eq('a monitored film with no file reads Wanted', view({ status: 'in_library', hasFile: false, monitored: true }).badge, 'Wanted');
 eq('an unmonitored film reads Unmonitored', view({ status: 'in_library', hasFile: false, monitored: false }).badge, 'Unmonitored');
@@ -138,6 +138,18 @@ eq('a missing film that cannot offers Radarr instead', view({ status: 'missing',
 eq('no state at all reads as checking', view(null).badge, 'Checking…');
 eq('an unknown status is reported as unreachable', view({ status: 'nonsense' }).badge, 'Unreachable');
 eq('an error keeps its message', view({ status: 'error', message: 'boom' }).title, 'boom');
+
+console.log('Sonarr wording on the same button');
+const sonarr = (state) => R.libraryView({ destination: 'sonarr', ...state });
+eq('a complete series reads Downloaded', sonarr({ status: 'in_library', hasFile: true }).badge, 'Downloaded');
+eq('a half-fetched series reads Partial', sonarr({ status: 'in_library', partial: true, episodeFileCount: 4, episodeCount: 10 }).badge, 'Partial');
+eq('and says how far along it is', sonarr({ status: 'in_library', partial: true, episodeFileCount: 4, episodeCount: 10 }).title, 'In your Sonarr library (4 of 10 episodes)');
+eq('a partial series is toned warn', sonarr({ status: 'in_library', partial: true }).tone, 'warn');
+eq('the button names Sonarr, not Radarr', sonarr({ status: 'missing', canAdd: true }).label, 'Add to Sonarr');
+eq('and calls it a series', sonarr({ status: 'missing', canAdd: true }).title, 'Add this series to Sonarr with your default profile and root folder');
+eq('an unreachable Sonarr says so', sonarr({ status: 'nonsense' }).title, 'Could not reach Sonarr');
+eq('a movie still says movie', view({ status: 'missing', canAdd: true }).title, 'Add this movie to Radarr with your default profile and root folder');
+
 
 eq('a poster + offers to add when it can', R.posterAddView(null, true).label, 'Add to Radarr');
 eq('and points at Radarr when it cannot', R.posterAddView(null, false).label, 'Open this in Radarr to add it');

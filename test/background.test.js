@@ -16,7 +16,7 @@ let local = {};
 let session = {};
 let permissionGranted = true;
 const calls = { windowsCreate: [], windowsRemove: [], tabsCreate: [], badge: [], openOptions: 0 };
-const listeners = { storage: [], windowsRemoved: [], tabsRemoved: [], message: [], actionClicked: [] };
+const listeners = { storage: [], windowsRemoved: [], tabsRemoved: [], message: [], actionClicked: [], installed: [] };
 
 function pick(store, keys) {
   if (keys === null || keys === undefined) return { ...store };
@@ -44,6 +44,7 @@ const chrome = {
   runtime: {
     getManifest: () => ({ version: '2.2.0' }),
     onMessage: { addListener: (fn) => listeners.message.push(fn) },
+    onInstalled: { addListener: (fn) => listeners.installed.push(fn) },
     openOptionsPage: async () => { calls.openOptions++; }
   },
   permissions: { contains: async () => permissionGranted },
@@ -81,7 +82,7 @@ ctx.importScripts = (...files) => {
   }
 };
 vm.createContext(ctx);
-vm.runInContext(src + '\n;globalThis.__api = { radarrResolve, radarrAdd, radarrTest, plexResolve, normalizeRadarrUrl, radarrOriginPattern, plexSignInStart, plexSignInStatus, plexSignInCancel, plexSignOut, getPlexHeaders, radarrHasFile, plexLibraryMatch, getLibraryIndex, radarrLibraryMatch, plexIndexStatus, plexIndexRebuild, sweepExpiredCache };', ctx);
+vm.runInContext(src + '\n;globalThis.__api = { radarrResolve, radarrAdd, radarrTest, plexResolve, normalizeRadarrUrl, radarrOriginPattern, plexSignInStart, plexSignInStatus, plexSignInCancel, plexSignOut, getPlexHeaders, radarrHasFile, plexLibraryMatch, getLibraryIndex, radarrLibraryMatch, plexIndexStatus, plexIndexRebuild, sweepExpiredCache, sonarrResolve, sonarrAdd, sonarrLibraryMatch, sonarrTest };', ctx);
 const api = ctx.__api;
 
 // ---- tiny assert -----------------------------------------------------------
@@ -127,6 +128,55 @@ const plexServer = http.createServer((req, res) => {
         connections: [{ uri: pmsBase, protocol: 'https', local: true, relay: false }] },
       { name: 'Living Room TV', provides: 'player', connections: [] }
     ]);
+  }
+  send(404, {});
+});
+
+// ---- fake Sonarr -----------------------------------------------------------
+// Same shape as the Radarr stub, in Sonarr's nouns: /series, tvdbId, and
+// statistics instead of a single file.
+const seriesCatalog = {
+  'tt2861424': { tvdbId: 275274, title: 'Rick and Morty', year: 2013, titleSlug: 'rick-and-morty', imdbId: 'tt2861424' },
+  'tt11280740': { tvdbId: 371980, title: 'Severance', year: 2022, titleSlug: 'severance', imdbId: 'tt11280740' }
+};
+const seriesLibrary = new Map();
+let sonarrApp = 'Sonarr';
+let sonarrPost = null;
+const sonarr = { listCalls: 0, postCount: 0 };
+const sonarrServer = http.createServer((req, res) => {
+  const u = new URL(req.url, 'http://x');
+  const send = (code, body) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
+  if (req.headers['x-api-key'] !== 'sonarr-key') return send(401, { error: 'Unauthorized' });
+  if (u.pathname === '/api/v3/system/status') return send(200, { appName: sonarrApp, instanceName: 'Sonarr (NAS)', version: '4.0.9.2244' });
+  if (u.pathname === '/api/v3/qualityprofile') return send(200, [{ id: 2, name: 'HD-1080p' }]);
+  if (u.pathname === '/api/v3/rootfolder') return send(200, [{ id: 1, path: '/tv', freeSpace: 512000000000 }]);
+  if (u.pathname === '/api/v3/series/lookup') {
+    const term = u.searchParams.get('term') || '';
+    let results = [];
+    if (term.startsWith('imdb:')) { const x = seriesCatalog[term.slice(5)]; if (x) results = [x]; }
+    else results = Object.values(seriesCatalog).filter(x => term.toLowerCase().includes(x.title.toLowerCase()));
+    return send(200, results.map(x => ({ ...x, id: 0 })));
+  }
+  if (u.pathname === '/api/v3/series' && req.method === 'GET') {
+    if (!u.searchParams.has('tvdbId')) {
+      sonarr.listCalls++;
+      return send(200, [...seriesLibrary.values()]);
+    }
+    const x = seriesLibrary.get(Number(u.searchParams.get('tvdbId')));
+    return send(200, x ? [x] : []);
+  }
+  if (u.pathname === '/api/v3/series' && req.method === 'POST') {
+    let body = '';
+    req.on('data', c => body += c);
+    req.on('end', () => {
+      sonarr.postCount++;
+      const x = JSON.parse(body); sonarrPost = x;
+      if (seriesLibrary.has(x.tvdbId)) return send(400, [{ errorMessage: 'This series has already been added' }]);
+      const added = { ...x, id: 500 + seriesLibrary.size, statistics: { episodeCount: 10, episodeFileCount: 0 } };
+      seriesLibrary.set(x.tvdbId, added);
+      send(201, added);
+    });
+    return;
   }
   send(404, {});
 });
@@ -226,6 +276,7 @@ const radarrServer = http.createServer((req, res) => {
   plexBase = await listen(plexServer);
   pmsBase = await listen(pmsServer);
   const base = await listen(radarrServer);
+  const sonarrBase = await listen(sonarrServer);
 
   // =========================================================================
   console.log('Plex headers');
@@ -536,6 +587,92 @@ const radarrServer = http.createServer((req, res) => {
   r = await radarrAsk([['inception', 'Inception', '2010']]);
   check('the rebuilt index sees the new movie', radarr.listCalls === 1 && !!r.matches.inception, r.matches);
 
+  console.log('Sonarr');
+  const sonarrCfg = (extra) => { local = { sonarrEnabled: true, sonarrUrl: sonarrBase, sonarrApiKey: 'sonarr-key', ...extra }; };
+  const severance = { title: 'Severance', year: '2022', imdbId: 'tt11280740', type: 'show' };
+  const rickMorty = { title: 'Rick and Morty', year: '2013', imdbId: 'tt2861424', type: 'show' };
+
+  local = {};
+  r = await api.sonarrResolve(severance);
+  check('sonarr off -> disabled', r.status === 'disabled', r);
+
+  sonarrCfg({ sonarrApiKey: '' });
+  r = await api.sonarrResolve(severance);
+  check('no api key -> unconfigured', r.status === 'unconfigured', r);
+
+  seriesLibrary.clear();
+  sonarrCfg({ sonarrQualityProfileId: 2, sonarrRootFolder: '/tv' });
+  r = await api.sonarrResolve(severance);
+  check('a series not in Sonarr -> missing, addable', r.status === 'missing' && r.canAdd === true, r);
+  check('and points at Sonarr\'s add page', (r.url || '').includes('/add/new?term=imdb%3Att11280740'), r);
+
+  sonarr.postCount = 0;
+  r = await api.sonarrAdd(severance);
+  check('add -> in_library', r.status === 'in_library' && r.justAdded === true && sonarr.postCount === 1, r);
+  check('POST carries the profile, root folder and monitor choice',
+    sonarrPost.qualityProfileId === 2 && sonarrPost.rootFolderPath === '/tv' &&
+    sonarrPost.addOptions.monitor === 'all' && sonarrPost.addOptions.searchForMissingEpisodes === true &&
+    sonarrPost.seasonFolder === true, sonarrPost);
+  check('a freshly added series has no episodes yet', r.hasFile === false && r.partial === false, r);
+
+  r = await api.sonarrResolve(severance);
+  check('now it is in the library', r.status === 'in_library' && r.alreadyAdded !== true, r);
+  check('and links to its Sonarr page', (r.url || '').includes('/series/severance'), r);
+
+  // Sonarr counts episodes, so a series can be partly here.
+  seriesLibrary.get(371980).statistics = { episodeCount: 10, episodeFileCount: 4 };
+  r = await api.sonarrResolve(severance);
+  check('4 of 10 episodes -> partial, not downloaded', r.partial === true && r.hasFile === false &&
+    r.episodeFileCount === 4 && r.episodeCount === 10, r);
+  seriesLibrary.get(371980).statistics = { episodeCount: 10, episodeFileCount: 10 };
+  r = await api.sonarrResolve(severance);
+  check('every episode -> downloaded', r.hasFile === true && r.partial === false, r);
+
+  sonarr.postCount = 0;
+  r = await api.sonarrAdd(severance);
+  check('adding an existing series reports it without posting', r.alreadyAdded === true && sonarr.postCount === 0, r);
+
+  sonarrCfg({ sonarrQualityProfileId: 0, sonarrRootFolder: '' });
+  r = await api.sonarrAdd(rickMorty);
+  check('no profile or root folder -> unconfigured, nothing posted', r.status === 'unconfigured', r);
+
+  console.log('Sonarr library index');
+  sonarrCfg({ sonarrQualityProfileId: 2, sonarrRootFolder: '/tv' });
+  await chrome.storage.local.set({ sonarrUrl: sonarrBase });
+  await sleep(5);
+  sonarr.listCalls = 0;
+  r = await api.sonarrLibraryMatch([
+    { key: 'severance', title: 'Severance', year: '2022' },
+    { key: 'rick-and-morty', title: 'Rick and Morty', year: '2013' }
+  ]);
+  check('lists the library once for the batch', sonarr.listCalls === 1, sonarr);
+  check('a series in Sonarr is matched', !!r.matches.severance && r.matches.severance.hasFile === true, r.matches);
+  check('one that is not is absent', !('rick-and-morty' in r.matches), r.matches);
+  check('reports whether a one-click add is possible', r.ok && r.canAdd === true, r);
+
+  console.log('sonarrTest');
+  r = await api.sonarrTest({ url: sonarrBase, apiKey: 'sonarr-key' });
+  check('connect ok + options', r.ok && r.profiles[0].name === 'HD-1080p' && r.rootFolders[0].path === '/tv' &&
+    r.instanceName === 'Sonarr (NAS)', r);
+  r = await api.sonarrTest({ url: sonarrBase, apiKey: 'nope' });
+  check('bad key -> unauthorized', !r.ok && r.reason === 'unauthorized', r);
+  sonarrApp = 'Radarr';
+  r = await api.sonarrTest({ url: sonarrBase, apiKey: 'sonarr-key' });
+  check('pointing at Radarr -> wrong_app', !r.ok && r.reason === 'wrong_app' && r.appName === 'Radarr', r);
+  sonarrApp = 'Sonarr';
+
+  console.log('first run');
+  local = {};
+  session = {};
+  calls.openOptions = 0;
+  await listeners.installed[0]({ reason: 'update', previousVersion: '2.6.0' });
+  check('an update opens nothing', calls.openOptions === 0 && !local.installedAt, { calls: calls.openOptions, local });
+  await listeners.installed[0]({ reason: 'install' });
+  await waitFor(async () => calls.openOptions === 1);
+  check('a fresh install opens the settings page', calls.openOptions === 1, calls.openOptions);
+  check('and lands on the Plex card', session.optionsFocus && session.optionsFocus.section === 'plex', session);
+  check('the install is recorded', typeof local.installedAt === 'number', local);
+
   console.log('film-link cache upkeep');
   const day = 24 * 60 * 60 * 1000;
   local = {
@@ -555,15 +692,18 @@ const radarrServer = http.createServer((req, res) => {
   console.log('settings page');
   const route = (msg) => new Promise((resolve) => listeners.message[0](msg, {}, resolve));
   session = {};
+  // Counted relative to here, so the order of the blocks above can change.
+  let opened = calls.openOptions;
   r = await route({ action: 'openOptions', section: 'radarr' });
-  check('openOptions -> opens the options page', r.ok === true && calls.openOptions === 1, r);
+  check('openOptions -> opens the options page', r.ok === true && calls.openOptions === opened + 1, r);
   check('openOptions -> remembers the section to scroll to', session.optionsFocus && session.optionsFocus.section === 'radarr', session);
   session = {};
   r = await route({ action: 'openOptions' });
   check('openOptions without section leaves no focus request', r.ok === true && !('optionsFocus' in session), session);
+  opened = calls.openOptions;
   listeners.actionClicked[0]();
-  await waitFor(async () => calls.openOptions === 3);
-  check('toolbar click -> opens the options page', calls.openOptions === 3, calls.openOptions);
+  await waitFor(async () => calls.openOptions === opened + 1);
+  check('toolbar click -> opens the options page', calls.openOptions === opened + 1, calls.openOptions);
   r = await route({ action: 'nope' });
   check('unknown action -> error', typeof r.error === 'string' && r.error.includes('nope'), r);
 
@@ -571,5 +711,6 @@ const radarrServer = http.createServer((req, res) => {
   plexServer.close();
   pmsServer.close();
   radarrServer.close();
+  sonarrServer.close();
   process.exit(fail ? 1 : 0);
 })().catch((e) => { console.error(e); process.exit(1); });
