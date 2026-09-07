@@ -465,7 +465,17 @@
   line-height: 1;
 }
 
-.reelhop-poster-filter > svg {
+.reelhop-filter-dim {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.reelhop-filter-dim[hidden] {
+  display: none;
+}
+
+.reelhop-filter-dim > svg {
   width: 14px;
   height: 14px;
   flex-shrink: 0;
@@ -557,4 +567,62 @@
 .reelhop-filter-reset:hover {
   background: rgba(229, 160, 13, 0.3);
   color: #fff;
+}
+
+/* Bulk add: adds every shown film that isn't in Radarr. Two clicks, because
+   one careless click could queue a whole page. */
+.reelhop-filter-bulk,
+.reelhop-filter-cancel {
+  margin: 0;
+  padding: 6px 11px;
+  border-radius: 4px;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.reelhop-filter-bulk {
+  background: rgba(255, 194, 48, 0.16);
+  border: 1px solid rgba(255, 194, 48, 0.4);
+  color: #ffc230;
+}
+
+.reelhop-filter-bulk:hover {
+  background: rgba(255, 194, 48, 0.28);
+  color: #fff;
+}
+
+.reelhop-filter-bulk.is-armed {
+  background: #ffc230;
+  border-color: #ffc230;
+  color: #14181c;
+}
+
+.reelhop-filter-bulk.is-busy {
+  animation: reelhop-pulse 1s ease-in-out infinite;
+  cursor: default;
+}
+
+.reelhop-filter-bulk:focus-visible,
+.reelhop-filter-cancel:focus-visible {
+  outline: 2px solid #ffc230;
+  outline-offset: 1px;
+}
+
+.reelhop-filter-cancel {
+  background: transparent;
+  border: 1px solid #34404a;
+  color: #99aabb;
+}
+
+.reelhop-filter-cancel:hover {
+  border-color: #56636f;
+  color: #fff;
+}
+
+/* The bar gets busy with two groups; let it wrap rather than overflow. */
+@media (max-width: 900px) {
+  .reelhop-filter-status {
+    margin-left: 0;
+  }
 }

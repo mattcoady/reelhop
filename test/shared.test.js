@@ -164,11 +164,47 @@ check('"not on Plex" keeps what is not', !R.filterHides('unavailable', null));
 check('an unanswered poster is never hidden', !R.filterHides('available', undefined) && !R.filterHides('unavailable', undefined));
 check('an unknown mode hides nothing', !R.filterHides('nonsense', null));
 
-const answers = { a: onPlex, b: null, c: onPlex };
-const tally = R.filterTally(['a', 'b', 'c', 'd'], (s) => answers[s], (s) => s in answers);
-eq('a tally counts every poster', tally, { total: 4, available: 2, unavailable: 1, pending: 1 });
-eq('an empty grid tallies to zero', R.filterTally([], () => null, () => true),
-   { total: 0, available: 0, unavailable: 0, pending: 0 });
+console.log('the Radarr half of the filter');
+check('showing everything hides nothing', !R.radarrFilterHides('all', true) && !R.radarrFilterHides('all', false));
+check('"in Radarr" hides what is not', R.radarrFilterHides('in', false));
+check('"in Radarr" keeps what is', !R.radarrFilterHides('in', true));
+check('"not in Radarr" hides what is', R.radarrFilterHides('out', true));
+check('"not in Radarr" keeps what is not', !R.radarrFilterHides('out', false));
+check('an unanswered poster is never hidden', !R.radarrFilterHides('in', undefined) && !R.radarrFilterHides('out', undefined));
+
+console.log('the two halves together');
+// on Plex + in Radarr, not on Plex + in Radarr, on Plex + missing, missing everywhere
+const grid = [
+  { known: true, plex: onPlex, radarr: true },
+  { known: true, plex: null, radarr: true },
+  { known: true, plex: onPlex, radarr: false },
+  { known: true, plex: null, radarr: false },
+  { known: false, plex: undefined, radarr: undefined }
+];
+const hidden = (plex, radarr) => grid.filter(p => R.posterHidden({ plex, radarr }, p)).length;
+eq('showing everything hides nothing', hidden('all', 'all'), 0);
+eq('one half alone still filters', hidden('available', 'all'), 2);
+eq('the halves stack', hidden('unavailable', 'out'), 3);
+check('the survivor of both filters is the one missing everywhere',
+  grid.filter(p => !R.posterHidden({ plex: 'unavailable', radarr: 'out' }, p))
+      .every(p => !p.known || (p.plex === null && p.radarr === false)));
+eq('an unanswered poster survives every combination', grid.filter(p => !p.known)
+  .filter(p => R.posterHidden({ plex: 'available', radarr: 'in' }, p)).length, 0);
+
+console.log('filter bar counts');
+const counts = R.gridCounts(grid, { plex: 'all', radarr: 'all' });
+eq('every poster is counted', counts.total, 5);
+eq('an unanswered poster counts as pending', counts.pending, 1);
+eq('nothing is hidden when nothing is filtered', counts.visible, 5);
+eq('the Plex counts are what each button would show', counts.plex, { all: 5, available: 3, unavailable: 3 });
+eq('the Radarr counts likewise', counts.radarr, { all: 5, in: 3, out: 3 });
+
+// Each button's count has to respect the other half's current setting.
+const narrowed = R.gridCounts(grid, { plex: 'unavailable', radarr: 'all' });
+eq('counts narrow when the other half is set', narrowed.radarr, { all: 3, in: 2, out: 2 });
+eq('and the visible total follows', narrowed.visible, 3);
+eq('an empty grid counts to zero', R.gridCounts([], { plex: 'all', radarr: 'all' }),
+   { total: 0, pending: 0, visible: 0, plex: { all: 0, available: 0, unavailable: 0 }, radarr: { all: 0, in: 0, out: 0 } });
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

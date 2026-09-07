@@ -23,7 +23,7 @@
   // first in this same isolated world; see manifest content_scripts).
   const {
     sanitizeText, parseTitleYear, badgeLabelFor, radarrView,
-    posterAddView, posterSizeClass, filterHides, filterTally
+    posterAddView, posterSizeClass, posterHidden, gridCounts
   } = ReelHop;
 
   const CACHE_PREFIX = 'cacheTarget_';
@@ -48,6 +48,7 @@
   const radarrMemo = new Map();
   const RADARR_RECHECK_MS = 30 * 1000; // re-ask when a tab returns to view after this long
   const FILTER_MODES = ['all', 'available', 'unavailable'];
+  const RADARR_FILTER_MODES = ['all', 'in', 'out'];
 
   // ---------------------------------------------------------------------------
   // Shared helpers (used by every adapter)
@@ -499,6 +500,7 @@
         'showPosterAdd',
         'showPosterFilter',
         'posterFilter',
+        'posterFilterRadarr',
         'radarrEnabled',
         'radarrUrl'
       ], (items) => {
@@ -513,6 +515,7 @@
           showPosterAdd: items.showPosterAdd !== false,
           showPosterFilter: items.showPosterFilter !== false,
           posterFilter: FILTER_MODES.includes(items.posterFilter) ? items.posterFilter : 'all',
+          posterFilterRadarr: RADARR_FILTER_MODES.includes(items.posterFilterRadarr) ? items.posterFilterRadarr : 'all',
           radarrEnabled: items.radarrEnabled === true,
           radarrUrl: (items.radarrUrl || '').trim()
         };
@@ -575,7 +578,7 @@
   // change how it is drawn (repaint from memory).
   const POSTER_RESET_KEYS = ['plexToken', 'showPosterBadges', 'showPosterAdd',
                              'radarrEnabled', 'radarrUrl', 'radarrApiKey'];
-  const POSTER_REFRESH_KEYS = ['openInNewTab', 'showPosterFilter', 'posterFilter'];
+  const POSTER_REFRESH_KEYS = ['openInNewTab', 'showPosterFilter', 'posterFilter', 'posterFilterRadarr'];
   const FILTER_BAR_ID = 'reelhop-poster-filter';
   const FILTER_HIDDEN_CLASS = 'reelhop-filtered-out';
   const FILTER_MIN_POSTERS = 8; // below this a grid is a preview strip, not a page of films
@@ -584,8 +587,11 @@
   const posterKnown = new Set();   // slugs every enabled destination has answered for
   const posterPending = new Set(); // slugs queued or in flight
   let posterQueue = new Map();     // slug -> { title, year } waiting to be sent
+  const radarrInLibrary = new Set(); // slugs Radarr already had, for the filter
   let radarrCanAdd = false;        // profile + root folder are set, so "+" adds in place
   let radarrPosterProblem = '';    // why the "+" buttons are missing, if they are
+  let bulkArmed = false;           // the bulk add is one click from running
+  let bulkState = { running: false, done: 0, total: 0, added: 0, failed: 0, report: '' };
   let posterFlushTimer = null;
   let posterScanTimer = null;
 
@@ -706,8 +712,12 @@
 
 
   // ---- Availability filter -------------------------------------------------
-  // One bar above the page's main poster grid: All / On Plex / Not on Plex.
-  // The choice is stored, so it survives paging through a list.
+  // One bar above the page's main poster grid, with a group per destination:
+  // Plex (All / On Plex / Not on Plex) and, when Radarr is on, Radarr (All /
+  // In Radarr / Not in Radarr). They combine, so "Not on Plex" plus "Not in
+  // Radarr" is everything on the page worth grabbing — which is also what the
+  // bar's bulk add acts on. Both choices are stored, so they survive paging
+  // through a list.
 
   // The grid this page is about: the one holding the most film posters. A
   // handful of posters is a preview strip (a list card, "similar films"), not
@@ -725,52 +735,107 @@
     return bestCount >= FILTER_MIN_POSTERS ? best : null;
   }
 
-  // What the grid currently holds, split by what we know about each poster.
-  function gridTally(grid) {
-    const slugs = [...grid.querySelectorAll(POSTER_SELECTOR)].map(el => el.dataset.itemSlug);
-    return filterTally(slugs, (slug) => posterResults.get(slug), (slug) => posterKnown.has(slug));
+  function currentModes(settings) {
+    return {
+      plex: settings.posterFilter,
+      radarr: posterWants(settings).radarr ? settings.posterFilterRadarr : 'all'
+    };
   }
 
-  function setPosterFilter(mode) {
-    if (!FILTER_MODES.includes(mode)) return;
-    if (lastSettings) lastSettings.posterFilter = mode;
-    chrome.storage.local.set({ posterFilter: mode });
+  // One entry per poster in the grid, in the shape shared.js counts.
+  function gridPosters(grid) {
+    return [...grid.querySelectorAll(POSTER_SELECTOR)].map((el) => {
+      const slug = el.dataset.itemSlug;
+      return {
+        el,
+        slug,
+        known: posterKnown.has(slug),
+        plex: posterResults.get(slug),
+        radarr: posterKnown.has(slug) ? radarrInLibrary.has(slug) : undefined
+      };
+    });
+  }
+
+  function setPosterFilter(dimension, mode) {
+    const key = dimension === 'radarr' ? 'posterFilterRadarr' : 'posterFilter';
+    const allowed = dimension === 'radarr' ? RADARR_FILTER_MODES : FILTER_MODES;
+    if (!allowed.includes(mode)) return;
+    if (lastSettings) lastSettings[key] = mode;
+    chrome.storage.local.set({ [key]: mode });
     scanPosters();
   }
 
-  function createFilterBar() {
-    const bar = document.createElement('div');
-    bar.id = FILTER_BAR_ID;
-    bar.className = `reelhop-poster-filter ${INJECTED_CLASS}`;
-    bar.appendChild(createPlexIcon());
+  function buildFilterGroup(dimension, label, icon, buttons) {
+    const wrap = document.createElement('div');
+    wrap.className = 'reelhop-filter-dim';
+    wrap.dataset.dimension = dimension;
+    wrap.appendChild(icon);
 
     const group = document.createElement('div');
     group.className = 'reelhop-filter-group';
     group.setAttribute('role', 'group');
-    group.setAttribute('aria-label', 'Filter this grid by what is on Plex');
-    for (const [mode, label] of [['all', 'All'], ['available', 'On Plex'], ['unavailable', 'Not on Plex']]) {
+    group.setAttribute('aria-label', label);
+    for (const [mode, text] of buttons) {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'reelhop-filter-btn';
       btn.dataset.mode = mode;
-      const text = document.createElement('span');
-      text.textContent = label;
-      btn.appendChild(text);
+      const name = document.createElement('span');
+      name.textContent = text;
+      btn.appendChild(name);
       const count = document.createElement('span');
       count.className = 'reelhop-filter-count';
       btn.appendChild(count);
       btn.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
-        setPosterFilter(mode);
+        setPosterFilter(dimension, mode);
       });
       group.appendChild(btn);
     }
-    bar.appendChild(group);
+    wrap.appendChild(group);
+    return wrap;
+  }
+
+  function createFilterBar() {
+    const bar = document.createElement('div');
+    bar.id = FILTER_BAR_ID;
+    bar.className = `reelhop-poster-filter ${INJECTED_CLASS}`;
+
+    bar.appendChild(buildFilterGroup('plex', 'Filter this grid by what is on Plex', createPlexIcon(),
+      [['all', 'All'], ['available', 'On Plex'], ['unavailable', 'Not on Plex']]));
+    bar.appendChild(buildFilterGroup('radarr', 'Filter this grid by what is in Radarr', createRadarrIcon(),
+      [['all', 'All'], ['in', 'In Radarr'], ['out', 'Not in Radarr']]));
 
     const status = document.createElement('span');
     status.className = 'reelhop-filter-status';
     bar.appendChild(status);
+
+    // Adds every film currently shown that isn't in Radarr. Two steps, because
+    // one careless click could queue a whole page.
+    const bulk = document.createElement('button');
+    bulk.type = 'button';
+    bulk.className = 'reelhop-filter-bulk';
+    bulk.hidden = true;
+    bulk.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      onBulkAddClick();
+    });
+    bar.appendChild(bulk);
+
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'reelhop-filter-cancel';
+    cancel.textContent = 'Cancel';
+    cancel.hidden = true;
+    cancel.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      bulkArmed = false;
+      scanPosters();
+    });
+    bar.appendChild(cancel);
 
     // Only shown when the current filter leaves the grid empty, so there is
     // always a way back from a blank page.
@@ -782,10 +847,23 @@
     reset.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
-      setPosterFilter('all');
+      setPosterFilter('radarr', 'all');
+      setPosterFilter('plex', 'all');
     });
     bar.appendChild(reset);
     return bar;
+  }
+
+  // Which posters a bulk add would act on: shown, and offering a "+".
+  function bulkAddTargets(settings, grid) {
+    if (!grid || !radarrCanAdd || !posterWants(settings).radarr) return [];
+    const modes = currentModes(settings);
+    return gridPosters(grid)
+      .filter(p => !posterHidden(modes, p))
+      .filter(p => {
+        const state = radarrPoster.get(p.slug);
+        return state && (state.status === 'add' || state.status === 'error');
+      });
   }
 
   // Place (or remove) the bar and bring its labels up to date.
@@ -803,52 +881,135 @@
       anchor.parentNode.insertBefore(bar, anchor);
     }
 
-    const mode = settings.posterFilter;
-    const tally = gridTally(grid);
-    const counts = { all: tally.total, available: tally.available, unavailable: tally.unavailable };
-    for (const btn of bar.querySelectorAll('.reelhop-filter-btn')) {
-      const active = btn.dataset.mode === mode;
-      btn.classList.toggle('is-active', active);
-      btn.setAttribute('aria-pressed', String(active));
-      const count = btn.querySelector('.reelhop-filter-count');
-      // Counts are only meaningful once every poster has an answer.
-      const text = tally.pending > 0 && btn.dataset.mode !== 'all' ? '' : String(counts[btn.dataset.mode]);
-      if (count.textContent !== text) count.textContent = text;
+    const modes = currentModes(settings);
+    const counts = gridCounts(gridPosters(grid), modes);
+    const showRadarr = posterWants(settings).radarr;
+
+    for (const dim of bar.querySelectorAll('.reelhop-filter-dim')) {
+      const dimension = dim.dataset.dimension;
+      if (dimension === 'radarr') dim.hidden = !showRadarr;
+      const active = modes[dimension];
+      for (const btn of dim.querySelectorAll('.reelhop-filter-btn')) {
+        const isActive = btn.dataset.mode === active;
+        btn.classList.toggle('is-active', isActive);
+        btn.setAttribute('aria-pressed', String(isActive));
+        // Counts only mean something once every poster has an answer.
+        const text = counts.pending > 0 ? '' : String(counts[dimension][btn.dataset.mode]);
+        const count = btn.querySelector('.reelhop-filter-count');
+        if (count.textContent !== text) count.textContent = text;
+      }
     }
 
-    const shown = mode === 'available' ? tally.available
-      : mode === 'unavailable' ? tally.unavailable
-      : tally.total;
-    const empty = tally.pending === 0 && tally.total > 0 && shown === 0;
+    const empty = counts.pending === 0 && counts.total > 0 && counts.visible === 0;
+    const filtered = modes.plex !== 'all' || modes.radarr !== 'all';
 
     const status = bar.querySelector('.reelhop-filter-status');
     let note = '';
-    if (tally.pending > 0) note = 'Checking Plex…';
+    if (counts.pending > 0) note = 'Checking…';
+    else if (bulkState.running) note = `Adding ${bulkState.done + 1} of ${bulkState.total}…`;
+    else if (bulkState.report) note = bulkState.report;
     else if (radarrPosterProblem) note = radarrPosterProblem;
-    else if (mode === 'available' && tally.available === 0) note = 'Nothing on this page is on Plex.';
-    else if (mode === 'unavailable' && tally.unavailable === 0) note = 'Everything on this page is on Plex.';
+    else if (empty) note = 'Nothing on this page matches.';
+    else if (filtered) note = `Showing ${counts.visible} of ${counts.total}`;
     if (status.textContent !== note) status.textContent = note;
     status.classList.toggle('is-empty', empty);
+
+    syncBulkButton(bar, settings, grid);
 
     const reset = bar.querySelector('.reelhop-filter-reset');
     if (reset.hidden !== !empty) reset.hidden = !empty;
   }
 
-  // Hide the grid items the current mode excludes. A poster we haven't heard
+  function syncBulkButton(bar, settings, grid) {
+    const bulk = bar.querySelector('.reelhop-filter-bulk');
+    const cancel = bar.querySelector('.reelhop-filter-cancel');
+    const targets = bulkAddTargets(settings, grid);
+
+    if (bulkState.running) {
+      bulk.hidden = false;
+      bulk.disabled = true;
+      bulk.textContent = 'Adding…';
+      bulk.className = 'reelhop-filter-bulk is-busy';
+      cancel.hidden = true;
+      return;
+    }
+    bulk.disabled = false;
+    if (targets.length === 0) {
+      bulk.hidden = true;
+      cancel.hidden = true;
+      bulkArmed = false;
+      return;
+    }
+    bulk.hidden = false;
+    const noun = `${targets.length} film${targets.length === 1 ? '' : 's'}`;
+    bulk.textContent = bulkArmed ? `Add ${noun}?` : `Add ${noun} to Radarr`;
+    bulk.className = `reelhop-filter-bulk${bulkArmed ? ' is-armed' : ''}`;
+    bulk.title = bulkArmed
+      ? 'Click again to add every film shown that is not in Radarr'
+      : `Add the ${noun} shown here that are not in Radarr`;
+    cancel.hidden = !bulkArmed;
+  }
+
+  function onBulkAddClick() {
+    if (bulkState.running || !lastSettings) return;
+    if (!bulkArmed) {
+      bulkArmed = true;
+      scanPosters();
+      return;
+    }
+    bulkArmed = false;
+    runBulkAdd();
+  }
+
+  // Add the shown films one at a time. Sequential on purpose: Radarr does a
+  // remote lookup per add, and a page of them at once is a burst it doesn't
+  // need. Each poster's "+" updates as its turn comes.
+  async function runBulkAdd() {
+    const grid = mainPosterGrid();
+    const targets = bulkAddTargets(lastSettings, grid);
+    if (targets.length === 0) return;
+
+    bulkState = { running: true, done: 0, total: targets.length, added: 0, failed: 0, report: '' };
+    scanPosters();
+
+    for (const target of targets) {
+      await addPosterToRadarr(target.el);
+      const state = radarrPoster.get(target.slug);
+      if (state && state.status === 'added') bulkState.added++;
+      else bulkState.failed++;
+      bulkState.done++;
+      scanPosters();
+    }
+
+    const parts = [`Added ${bulkState.added}`];
+    if (bulkState.failed > 0) parts.push(`${bulkState.failed} failed`);
+    bulkState = { running: false, done: 0, total: 0, added: 0, failed: 0, report: parts.join(', ') };
+    scanPosters();
+    setTimeout(() => {
+      bulkState.report = '';
+      scanPosters();
+    }, 6000);
+  }
+
+  // Hide the grid items the current modes exclude. A poster we haven't heard
   // back about yet stays visible: better a late change than a wrong one.
   function applyPosterFilter(settings, grid) {
-    const mode = grid && settings.showPosterFilter ? settings.posterFilter : 'all';
+    const modes = grid && settings.showPosterFilter
+      ? currentModes(settings)
+      : { plex: 'all', radarr: 'all' };
+    const inGrid = new Map(grid ? gridPosters(grid).map(p => [p.el, p]) : []);
     for (const el of document.querySelectorAll(POSTER_SELECTOR)) {
-      const item = el.closest('li') || el;
-      const inGrid = grid && grid.contains(el);
-      const hide = inGrid && filterHides(mode, posterResults.get(el.dataset.itemSlug));
-      item.classList.toggle(FILTER_HIDDEN_CLASS, hide);
+      const poster = inGrid.get(el);
+      const hide = !!poster && posterHidden(modes, poster);
+      (el.closest('li') || el).classList.toggle(FILTER_HIDDEN_CLASS, hide);
     }
   }
 
   // Forget everything and strip the marks; the next scan starts over.
   function resetPosters() {
     radarrPosterProblem = '';
+    radarrInLibrary.clear();
+    bulkArmed = false;
     posterResults.clear();
     radarrPoster.clear();
     posterKnown.clear();
@@ -939,9 +1100,14 @@
         // A Radarr that can't be reached stays quiet on the posters themselves
         // rather than stamping an error on every one; the filter bar says why
         // once, and the film-page button reports the detail.
-        if (!radarrRes || !radarrRes.ok) radarrPoster.set(key, null);
-        else if (radarrRes.matches[key]) radarrPoster.set(key, null); // already in Radarr
-        else radarrPoster.set(key, { status: 'add', url: radarrCanAdd ? null : addPageUrl(radarrRes, batch.get(key)) });
+        if (!radarrRes || !radarrRes.ok) {
+          radarrPoster.set(key, null);
+        } else if (radarrRes.matches[key]) {
+          radarrPoster.set(key, null); // already in Radarr
+          radarrInLibrary.add(key);
+        } else {
+          radarrPoster.set(key, { status: 'add', url: radarrCanAdd ? null : addPageUrl(radarrRes, batch.get(key)) });
+        }
       }
       posterPending.delete(key);
       posterKnown.add(key);
@@ -989,6 +1155,9 @@
 
     if (result && result.status === 'in_library') {
       radarrPoster.set(slug, { status: 'added', url: result.url || state.url });
+      // Deliberately not added to radarrInLibrary: a film shouldn't vanish
+      // from under the cursor the moment it is added. The next page load
+      // re-asks Radarr and files it correctly.
     } else {
       const message = (result && (result.message || result.error)) ||
         (result && result.status === 'not_found' ? 'Radarr could not find this film' : 'Radarr could not add this film');

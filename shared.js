@@ -220,17 +220,51 @@
     return mode === 'available' ? !match : !!match;
   }
 
-  // Split a grid's posters by what is known about each. `lookup` returns the
-  // Plex answer for a slug; `known` says whether it has been answered at all.
-  function filterTally(slugs, lookup, known) {
-    const tally = { total: 0, available: 0, unavailable: 0, pending: 0 };
-    for (const slug of slugs) {
-      tally.total++;
-      if (!known(slug)) tally.pending++;
-      else if (lookup(slug)) tally.available++;
-      else tally.unavailable++;
-    }
-    return tally;
+  // Should the Radarr half of the filter hide this poster? `inLibrary` is true
+  // when the film is already in Radarr, false when it isn't, and undefined
+  // while we are still waiting — and again, unanswered is never hidden.
+  function radarrFilterHides(mode, inLibrary) {
+    if (mode !== 'in' && mode !== 'out') return false;
+    if (inLibrary === undefined) return false;
+    return mode === 'in' ? !inLibrary : !!inLibrary;
+  }
+
+  // A poster survives only if both halves of the filter let it through.
+  function posterHidden(modes, poster) {
+    return filterHides(modes.plex, poster.plex) ||
+           radarrFilterHides(modes.radarr, poster.radarr);
+  }
+
+  function countVisible(posters, plexMode, radarrMode) {
+    const modes = { plex: plexMode, radarr: radarrMode };
+    let n = 0;
+    for (const p of posters) if (!posterHidden(modes, p)) n++;
+    return n;
+  }
+
+  // Everything the filter bar needs to label itself. Each button's count is
+  // what you would actually see after clicking it, so the other half of the
+  // filter is held at its current setting rather than ignored.
+  //
+  // posters: [{ plex, radarr, known }] — plex is the Plex answer (object when
+  // on a server, null when not, undefined when unanswered), radarr is true /
+  // false / undefined for "already in Radarr".
+  function gridCounts(posters, modes) {
+    return {
+      total: posters.length,
+      pending: posters.filter(p => !p.known).length,
+      visible: countVisible(posters, modes.plex, modes.radarr),
+      plex: {
+        all: countVisible(posters, 'all', modes.radarr),
+        available: countVisible(posters, 'available', modes.radarr),
+        unavailable: countVisible(posters, 'unavailable', modes.radarr)
+      },
+      radarr: {
+        all: countVisible(posters, modes.plex, 'all'),
+        in: countVisible(posters, modes.plex, 'in'),
+        out: countVisible(posters, modes.plex, 'out')
+      }
+    };
   }
 
   root.ReelHop = {
@@ -248,6 +282,9 @@
     posterAddView,
     posterSizeClass,
     filterHides,
-    filterTally
+    radarrFilterHides,
+    posterHidden,
+    countVisible,
+    gridCounts
   };
 })(typeof globalThis !== 'undefined' ? globalThis : self);
