@@ -178,10 +178,7 @@ A destination is (a) a section in `background.js` exposing `<name>Resolve` / `<n
 zip -r reelhop.zip manifest.json shared.js background.js content.js content.css options.html options.js options.css icons
 ```
 
-Store listing reminders:
-- Set the privacy policy URL to this repo's [PRIVACY.md](PRIVACY.md).
-- In the dashboard Privacy tab, disclose that the extension handles **authentication information** (the Plex token and Radarr API key), stored locally only.
-- `optional_host_permissions` covers `http://*/*` and `https://*/*` so users can point at any Radarr address; explain in the listing that it's only ever requested for the one host they enter.
+The listing copy, every permission justification and the pre-submission checklist live in [STORE.md](STORE.md).
 
 ---
 
