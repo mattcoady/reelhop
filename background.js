@@ -12,7 +12,16 @@
 // every enabled destination in parallel and paints whatever comes back, so a
 // slow or offline Radarr never delays the Plex link.
 
-importScripts('shared.js');
+// Firefox's promise-based namespace is `browser`; its `chrome` is the
+// callback-style alias, and this file is written against promises. Bind to
+// whichever the browser provides, so one source runs on both.
+const chrome = globalThis.browser || globalThis.chrome;
+
+// Chrome runs this file as a service worker, where importScripts() is how a
+// second file gets loaded. Firefox has no service workers: there it runs as a
+// background page whose manifest lists shared.js ahead of this file, so
+// ReelHop is already defined and there is nothing to import.
+if (typeof importScripts === 'function') importScripts('shared.js');
 
 const SERVER_LIST_TTL = 3600000; // 1 hour
 const REQUEST_TIMEOUT = 3000;

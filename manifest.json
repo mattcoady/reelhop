@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "ReelHop",
   "version": "2.9.1",
-  "description": "Hop from Letterboxd and IMDb to Plex or Radarr in one click, and see which posters are already on your Plex. Unofficial; not affiliated with Letterboxd, IMDb, Plex, or Radarr.",
+  "description": "See what's already on your Plex from Letterboxd and IMDb, and send what isn't straight to Radarr or Sonarr. Unofficial.",
   "icons": {
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",

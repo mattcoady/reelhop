@@ -62,6 +62,17 @@
           <span class="pill muted">Always on</span>
         </div>
         <div class="card-body">
+          <!-- Firefox treats Manifest V3 host permissions as opt-in, so nothing
+               can reach Plex until the user grants them. Chrome grants them at
+               install, where this row stays hidden. -->
+          <div id="plexAccessRow" class="plex-row" hidden>
+            <button id="plexAccessBtn" class="btn secondary">Allow ReelHop to reach Plex</button>
+            <p class="hint">
+              Your browser asks for site access separately. ReelHop needs it for Plex's own
+              domains before it can sign in, check your library, or open a title on your server.
+            </p>
+          </div>
+
           <div id="plexSignedOut">
             <div class="plex-row">
               <button id="plexSignInBtn" class="btn plex">

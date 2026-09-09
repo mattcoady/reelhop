@@ -5,7 +5,7 @@
 const { spawnSync } = require('child_process');
 const path = require('path');
 
-const files = ['shared.test.js', 'background.test.js'];
+const files = ['shared.test.js', 'background.test.js', 'build.test.js'];
 let failed = 0;
 let totals = { pass: 0, fail: 0 };
 

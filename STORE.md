@@ -1,9 +1,10 @@
-# Chrome Web Store listing
+# Store listings
 
 Everything the dashboard asks for, written out so a submission is copy-and-paste
 rather than a fresh writing exercise each time. Keep it in step with
 [README.md](README.md) and [PRIVACY.md](PRIVACY.md) — the store review reads all
-three and will notice if they disagree.
+three and will notice if they disagree. Everything below is the Chrome Web Store
+unless a heading says otherwise; Firefox is at the end and reuses this copy.
 
 ---
 
@@ -15,10 +16,10 @@ three and will notice if they disagree.
 ReelHop
 ```
 
-**Summary** (132 characters max — this one is 108)
+**Summary** (132 characters max — this one is 119)
 
 ```
-See what's already on your Plex from Letterboxd and IMDb, and send what isn't straight to Radarr or Sonarr.
+See what's already on your Plex from Letterboxd and IMDb, and send what isn't straight to Radarr or Sonarr. Unofficial.
 ```
 
 **Category:** Entertainment
@@ -128,7 +129,7 @@ is what both sites and the settings page are designed against.
 
 - [ ] `node test/run.js` passes
 - [ ] Version bumped in `manifest.json`
-- [ ] Package rebuilt: see the zip command in [README.md](README.md#packaging-for-the-chrome-web-store)
+- [ ] `node build.js` run after the last source change, and `dist/reelhop-chrome-<version>.zip` is the file being uploaded
 - [ ] Load the zip unpacked in a clean profile and walk the first run: install → the settings page opens → sign in to Plex → build the index → open a grid
 - [ ] `PRIVACY.md` dated and matching the declarations above
 
@@ -138,3 +139,44 @@ Review usually takes a few days, and the optional host permissions tend to draw
 a question. If one arrives, the answer is the paragraph above: the address is
 the user's own, it is requested one origin at a time on an explicit button
 press, and declining only turns off the Radarr and Sonarr features.
+
+---
+
+## Firefox (addons.mozilla.org)
+
+Upload `dist/reelhop-firefox-<version>.zip` from `node build.js` — **not** the Chrome zip.
+The two differ only in the manifest, but a Chrome manifest will not run on Firefox at all
+(see [Browser differences](README.md#browser-differences)).
+
+The name, summary, description, category and single-purpose statement above all carry over
+unchanged. What differs:
+
+| | Notes |
+|---|---|
+| Registration fee | None; AMO is free |
+| Add-on id | `reelhop@mattcoady.github.io`, set in [`build.js`](build.js) — never change it for a published add-on |
+| Minimum Firefox | 115.0, where `storage.session` arrived |
+| Source code | Reviewers read it. Ours is plain unminified JavaScript with no build step for the source itself, so there is nothing to submit alongside |
+| Privacy policy | Same URL as Chrome |
+
+### The one thing a Firefox reviewer sees that a Chrome reviewer does not
+
+Firefox treats Manifest V3 `host_permissions` as opt-in, so a fresh install cannot reach
+Plex until the user grants access. Worth putting in the reviewer notes:
+
+```
+On Firefox the extension cannot reach any host until the user grants it. The settings page
+checks permissions.contains() for the three Plex domains in the manifest and, when they are
+not granted, shows an "Allow ReelHop to reach Plex" button that calls permissions.request()
+from that click. Radarr and Sonarr work the same way, one user-supplied origin at a time.
+Nothing is requested at install and nothing is requested for a host the user did not enter.
+```
+
+### Before submitting to AMO
+
+- [ ] `node test/run.js` passes (the build tests cover the generated Firefox manifest)
+- [ ] `node build.js` run after the last source change
+- [ ] Loaded `dist/firefox/` via `about:debugging` and walked the first run: grant access →
+      sign in to Plex → build the index → open a grid
+- [ ] Checked the sign-in PIN poll completes — it is the flow most sensitive to the
+      background-page difference

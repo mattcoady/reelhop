@@ -1,8 +1,8 @@
 # Privacy Policy — ReelHop
 
-_Last updated: September 5, 2026_
+_Last updated: September 7, 2026_
 
-**ReelHop** is a browser extension that adds destination buttons (Plex, Radarr) to movie pages on Letterboxd and IMDb. It is designed to collect as little data as possible, and nothing it handles ever leaves your device except requests made directly to the services you have connected.
+**ReelHop** is a browser extension that adds destination buttons (Plex, Radarr, Sonarr) to film and TV pages on Letterboxd and IMDb. It is designed to collect as little data as possible, and nothing it handles ever leaves your device except requests made directly to the services you have connected.
 
 ## What the extension stores
 

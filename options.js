@@ -2,6 +2,11 @@
 // network calls (Plex, Radarr) run in the background service worker.
 
 document.addEventListener('DOMContentLoaded', () => {
+  // Firefox's promise-based namespace is `browser`; its `chrome` is the
+  // callback-style alias, and this file is written against promises. Bind to
+  // whichever the browser provides, so one source runs on both.
+  const chrome = globalThis.browser || globalThis.chrome;
+
   // The worker's own URL handling, so what the user sees saved is exactly what
   // gets called (shared.js is loaded before this file).
   const { normalizeRadarrUrl, radarrOriginPattern } = ReelHop;
@@ -22,6 +27,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const plexUsernameEl = $('plexUsername');
   const plexServersEl = $('plexServers');
   const plexNote = $('plexNote');
+  const plexAccessRow = $('plexAccessRow');
+  const plexAccessBtn = $('plexAccessBtn');
   const modeSelect = $('preferredMode');
 
   // Radarr and Sonarr each own the rest of their card (see wireArrService);
@@ -178,6 +185,52 @@ document.addEventListener('DOMContentLoaded', () => {
     plexTokenManual.hidden = !visible;
     plexTokenToggle.textContent = visible ? 'Hide the token field' : 'Paste a token instead';
     if (visible) tokenInput.focus();
+  }
+
+  // Host access to Plex
+  //
+  // Chrome grants the manifest's host_permissions at install, so there the
+  // check below is always true and the row stays hidden. Firefox treats
+  // Manifest V3 host permissions as opt-in: until the user grants them every
+  // Plex call fails, so ask for them on a button press, which is the only
+  // context permissions.request() accepts. The list comes from the manifest
+  // rather than a copy here, so the two cannot drift.
+  const PLEX_ORIGINS = chrome.runtime.getManifest().host_permissions || [];
+
+  // Fails open: if the check itself errors, leave the controls enabled and let
+  // the real request report the real problem.
+  function hasPlexAccess() {
+    if (PLEX_ORIGINS.length === 0) return Promise.resolve(true);
+    return chrome.permissions.contains({ origins: PLEX_ORIGINS }).catch(() => true);
+  }
+
+  async function refreshPlexAccess() {
+    const granted = await hasPlexAccess();
+    plexAccessRow.hidden = granted;
+    plexSignInBtn.disabled = !granted;
+    plexTokenSaveBtn.disabled = !granted;
+    return granted;
+  }
+
+  plexAccessBtn.addEventListener('click', async () => {
+    try {
+      const granted = await chrome.permissions.request({ origins: PLEX_ORIGINS });
+      if (!granted) {
+        showNote(plexNote, "Without access to Plex's own domains ReelHop cannot sign in or check your library.", 'error', 6000);
+        return;
+      }
+      await refreshPlexAccess();
+      refreshPlexAccount();
+      refreshPlexIndex();
+    } catch (e) {
+      showNote(plexNote, `Could not ask for access to Plex: ${e.message}`, 'error', 7000);
+    }
+  });
+
+  // The grant can also be changed from the browser's own extensions page
+  // while this one is open.
+  for (const evt of ['onAdded', 'onRemoved']) {
+    if (chrome.permissions[evt]) chrome.permissions[evt].addListener(() => refreshPlexAccess());
   }
 
   async function refreshPlexAccount() {
@@ -869,6 +922,7 @@ document.addEventListener('DOMContentLoaded', () => {
     radarrAvailSelect.value = items.radarrMinAvailability || 'released';
     sonarrMonitorSelect.value = items.sonarrMonitor || 'all';
 
+    refreshPlexAccess();
     refreshSourceDots();
     refreshPlexAccount();
     refreshPlexIndex();

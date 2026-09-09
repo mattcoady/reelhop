@@ -28,7 +28,9 @@ Hop from the movie sites you already browse to your own media stack. ReelHop is 
 
 ## Install
 
-Until ReelHop is on the Chrome Web Store, load it unpacked:
+Until ReelHop is in the stores, load it unpacked.
+
+**Chrome, Brave, Edge**
 
 1. Clone this repository:
    ```bash
@@ -38,6 +40,22 @@ Until ReelHop is on the Chrome Web Store, load it unpacked:
 3. Toggle **Developer mode** (top right).
 4. Click **Load unpacked** and select the cloned directory.
 5. Click the ReelHop icon in the toolbar to open the settings page (it opens in its own tab).
+
+**Firefox**
+
+Firefox loads the generated manifest rather than the repo root, so build first:
+
+```bash
+node build.js
+```
+
+1. Open `about:debugging#/runtime/this-firefox`.
+2. Click **Load Temporary Add-on** and pick `dist/firefox/manifest.json`.
+3. Open the settings page and press **Allow ReelHop to reach Plex**. Firefox grants site
+   access separately from install — see [Browser differences](#browser-differences).
+
+A temporary add-on is removed when Firefox restarts, which is the normal way to run an
+unsigned Manifest V3 extension during development.
 
 ---
 
@@ -172,19 +190,54 @@ Pure logic (title parsing, matching, wording) belongs in [`shared.js`](shared.js
 
 A destination is (a) a section in `background.js` exposing `<name>Resolve` / `<name>Test` (and any actions, like `radarrAdd`) over `chrome.runtime.onMessage`, (b) a state + button painter in `content.js` alongside `radarrState` / `radarrView`, and (c) a card in `options.html` with its controls wired in `options.js` (simple controls just declare a `data-key` and auto-save). If it lives at a user-supplied URL, request its origin with `chrome.permissions.request` from the settings page the way the Radarr card does — don't widen `host_permissions`.
 
-### Packaging for the Chrome Web Store
+### Browser differences
+
+One source tree ships to both browsers. Three things differ, all handled in the code
+rather than by forking it:
+
+| | Chrome | Firefox |
+|---|---|---|
+| Background | Service worker (`background.service_worker`) | Non-persistent page (`background.scripts`) |
+| Promise namespace | `chrome.*` | `browser.*` (`chrome.*` there is callback-style) |
+| Host permissions | Granted at install | Opt-in; nothing reaches Plex until granted |
+
+- **Background.** [`background.js`](background.js) calls `importScripts('shared.js')` only
+  when `importScripts` exists — it does in a worker, and does not in a background page.
+  The Firefox manifest lists `shared.js` ahead of it instead.
+- **Namespace.** Each script starts with
+  `const chrome = globalThis.browser || globalThis.chrome;`, so the promise-based
+  namespace is the one used on both. Firefox's `chrome.*` is the callback alias, and the
+  whole codebase is written against promises.
+- **Host permissions.** Firefox treats Manifest V3 `host_permissions` as optional, so on a
+  fresh install every Plex call fails until the user grants them. The settings page checks
+  `permissions.contains` against the manifest's own origins and shows a grant button when
+  they are missing; on Chrome that check always passes and the button never appears. A new
+  destination at a user-supplied URL should use the same `permissions.request` path.
+
+### Building the packages
 
 ```bash
-zip -r reelhop.zip manifest.json shared.js background.js content.js content.css options.html options.js options.css icons
+node build.js
 ```
 
-The listing copy, every permission justification and the pre-submission checklist live in [STORE.md](STORE.md).
+Writes `dist/chrome/` and `dist/firefox/` — either can be loaded unpacked — plus
+`dist/reelhop-chrome-<version>.zip` and `dist/reelhop-firefox-<version>.zip` for the two
+stores. The build fails if either manifest, or `options.html`, references a file the
+package does not include, and the archives are byte-identical between runs of the same
+source.
+
+[`manifest.json`](manifest.json) is the Chrome manifest and the single source of truth for
+name, version and description. The Firefox manifest is generated from it in
+[`build.js`](build.js), so the two cannot drift.
+
+The listing copy, every permission justification and the pre-submission checklist live in
+[STORE.md](STORE.md).
 
 ---
 
 ## Privacy
 
-No analytics, no tracking, no data collection. Everything is stored locally and network requests go only to Plex and to the Radarr address you configure. Full details in [PRIVACY.md](PRIVACY.md).
+No analytics, no tracking, no data collection. Everything is stored locally and network requests go only to Plex and to the Radarr and Sonarr addresses you configure. Full details in [PRIVACY.md](PRIVACY.md).
 
 ## License
 

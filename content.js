@@ -19,6 +19,11 @@
 // (or isn't) on Plex. It batches whole pages into one message, so it costs
 // nothing per poster.
 (function () {
+  // Firefox's promise-based namespace is `browser`; its `chrome` is the
+  // callback-style alias, and this file is written against promises. Bind to
+  // whichever the browser provides, so one source runs on both.
+  const chrome = globalThis.browser || globalThis.chrome;
+
   'use strict';
 
   // Pure helpers shared with the worker and the settings page (shared.js runs
